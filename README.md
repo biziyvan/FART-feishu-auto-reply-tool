@@ -125,9 +125,19 @@ set LLM_API_KEY=sk-xxxxxxxx
 pip install playwright pyyaml requests pyinstaller   # 依赖一个都不能少
 python -m PyInstaller build.spec --noconfirm --distpath dist --workpath build/wk
 
-# 压缩：必须 cd 到 dist 再压缩，否则 zip 顶层会多一层 dist/
-cd dist && zip -r ../飞书自动回复助手-绿色版.zip 飞书自动回复助手
+# PyInstaller 只产出 exe + _internal/，顶层资源要手动补齐
+cp config.example.yaml 使用说明.txt LICENSE dist/飞书自动回复助手/
+
+# 打带版本号的分发包（自动清理同前缀旧包 + 解压验收）
+python package_release.py                 # 按 VERSION 的当前版本打包
+python package_release.py --bump patch    # 版本号 +1 再打包（1.0.1 -> 1.0.2）
 ```
+
+> **分发包文件名必须带版本号**：`飞书自动回复助手-绿色版-v1.0.1.zip`。
+> 版本号的唯一来源是仓库根目录的 `VERSION` 文件（语义化 `X.Y.Z`）；
+> **压缩包内的目录名恒为 `飞书自动回复助手/`（不带版本）**，保证用户解压路径稳定。
+> 打包统一走 `package_release.py`，它会顺手清掉同名旧包，并做解压验收
+> （校验顶层目录名、是否误混入 `config.yaml` / `.browser_data` 等用户数据）。
 
 > **三个必须记住的坑**
 >
