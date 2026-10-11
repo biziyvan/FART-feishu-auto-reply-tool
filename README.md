@@ -307,6 +307,21 @@ cdp.send("Input.insertText", {"text": "line1\n    indented\nline3"})
 已在代码层面加固（见上文「抗浏览器遮挡」）。但**直接关闭浏览器窗口**
 仍会导致页面丢失，程序会尝试自动恢复。
 
+**Q：双击后任务管理器里有进程，但界面一直不出来？**
+
+典型的 **Tk transient 陷阱**。首次运行要弹配置向导，而向导是 `Toplevel`：
+若把它 `transient()` 到一个被 `withdraw()` 的隐藏 root，**在 Windows/Tk 下
+owner 不可见时该窗口不会被 map** —— 现象就是「进程在后台跑着、界面永不出现」，
+`wait_window()` 无限空等。
+
+修复要点：
+- 只在 `master.winfo_viewable()` 为真时才 `transient()`；
+- 首次配置时创建向导后显式 `deiconify() + update()`，强制把它映射出来；
+- 启动期提示统一走 Windows 原生 `MessageBoxW`，保证 Tk 未就绪时也能看到报错
+  （Tk 的 `messagebox` 在那种情况下同样弹不出来）。
+
+旧版遇到卡住：任务管理器结束 `飞书自动回复助手.exe`，换新版重开即可。
+
 **Q：异常中断后浏览器被锁住？**
 
 ```bash

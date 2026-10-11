@@ -130,6 +130,20 @@ reply:
 # 会被完全吞掉 —— 用户看到的现象就是"点了按钮毫无反应"。
 # 这里接管回调异常：写入 launcher_error.log 并弹窗提示。
 # ============================================================
+def _native_msgbox(title, text, icon=0x40):
+    """用 Windows 原生消息框提示（不依赖 Tk）。
+
+    启动阶段 Tk 可能尚未就绪、或窗口因异常没能显示出来，这时 Tk 的
+    messagebox 同样弹不出来，用户就什么都看不到。原生消息框始终可靠。
+    icon: 0x10=错误 0x30=警告 0x40=信息；0x40000=置顶
+    """
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, str(text), str(title), icon | 0x40000)
+    except Exception:
+        pass
+
+
 def install_exception_hook(root):
     def _hook(exc, val, tb):
         text = "".join(traceback.format_exception(exc, val, tb))
@@ -303,9 +317,18 @@ class ConfigWizard(tk.Toplevel):
         self.result = False
         install_exception_hook(self)
         self._build()
-        # 模态 + 置顶，避免对话框被其它窗口盖住
+        # 模态 + 置顶，避免对话框被其它窗口盖住。
+        #
+        # ⚠️ 关键：只在 master「可见」时才设 transient。
+        # Windows/Tk 下，把 Toplevel transient 到一个不可见的 owner（首次配置
+        # 时的 root 是 withdraw() 状态）会导致 Tk 根本不 map 这个窗口 ——
+        # 现象是「进程在后台跑着，却永远看不到界面」，wait_window() 无限空等。
         try:
-            self.transient(master)
+            if master is not None and master.winfo_viewable():
+                self.transient(master)
+        except Exception:
+            pass
+        try:
             self.grab_set()
         except Exception:
             pass
@@ -970,16 +993,15 @@ def main():
     # 单实例保护：两个窗口同抢一个浏览器配置目录必然失败
     other = _acquire_single_instance()
     if other:
-        try:
-            messagebox.showwarning(
-                "程序已在运行",
-                f"检测到本程序已经打开（进程 {other}）。\n\n"
-                "同时开两个窗口会争抢浏览器配置，导致启动失败。\n"
-                "请切换到已经打开的那个窗口；确实要重开，\n"
-                "请先关闭它，或到任务管理器结束该进程。",
-            )
-        except Exception:
-            pass
+        # 用原生消息框：此刻 Tk 还没初始化，messagebox 不一定弹得出来
+        _native_msgbox(
+            APP_TITLE,
+            f"检测到本程序已经在运行（进程 {other}）。\n\n"
+            "同时开两个窗口会争抢浏览器配置，导致启动失败。\n\n"
+            "如果那个窗口已经找不到了，请按 Ctrl+Shift+Esc 打开任务管理器，\n"
+            "结束「飞书自动回复助手.exe」进程后再重新双击本程序。",
+            0x30,
+        )
         return
 
     try:
@@ -994,6 +1016,15 @@ def main():
             root = tk.Tk()
             root.withdraw()
             wiz = ConfigWizard(root)
+            # 显式把向导映射出来：root 是隐藏的，向导必须自己显示，
+            # 否则 wait_window() 会一直空等（见 ConfigWizard 里的说明）。
+            try:
+                wiz.deiconify()
+                wiz.update()        # 强制处理一次事件，确保窗口真正出现
+                wiz.lift()
+                wiz.grab_set()      # 窗口已可见后再抓取，模态才生效
+            except Exception:
+                pass
             wiz.wait_window()
             ok = wiz.result
             try:
@@ -1006,6 +1037,21 @@ def main():
         win = MainWindow()
         win.protocol("WM_DELETE_WINDOW", win.on_close)
         win.mainloop()
+    except Exception as e:
+        # 启动阶段出错：windowed 模式下原本会静默退出，用户看不到任何提示。
+        tb = traceback.format_exc()
+        try:
+            with open(ERROR_LOG, "a", encoding="utf-8") as f:
+                f.write(f"\n{'=' * 60}\n"
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 启动失败\n{tb}")
+        except Exception:
+            pass
+        _native_msgbox(
+            f"{APP_TITLE} · 启动失败",
+            f"{type(e).__name__}: {e}\n\n"
+            f"详细信息已写入程序目录下的 launcher_error.log。",
+            0x10,
+        )
     finally:
         _release_single_instance()
 
