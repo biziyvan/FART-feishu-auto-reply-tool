@@ -37,8 +37,11 @@ def build(question, course="智能合约技术"):
 
 def inspect(ans):
     """粗查是否触发减配规则。"""
-    body = re.sub(r"```[a-zA-Z]*", "", ans)
     issues = []
+    # ⚠️ 出现即失败：``` 会被飞书渲染成代码块，平台会判成"资料"而不是答案
+    if "```" in ans:
+        issues.append("含 ``` 代码围栏（会被平台判成资料而白答）")
+    body = re.sub(r"```[a-zA-Z]*", "", ans)
     if re.search(r"(^|\n)\s*(//|#\s|/\*|\*)", body):
         issues.append("疑似有注释行")
     if re.search(r"\b(try|except|catch|throws|require\(|revert\()", body) and "require" not in body[:0]:
@@ -65,6 +68,11 @@ def main():
             print("!! 模型无返回")
             continue
         print(ans)
+        sent = S.strip_code_fences(ans)
+        if sent != ans:
+            print(f"{'-' * 72}")
+            print("（兜底剥离 ``` 后，实际发送的内容：）")
+            print(sent)
         issues = inspect(ans)
         n_lines = len([x for x in ans.splitlines() if x.strip()])
         print(f"{'-' * 72}")

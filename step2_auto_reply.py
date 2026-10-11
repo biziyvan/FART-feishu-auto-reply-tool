@@ -27,6 +27,7 @@ import json
 import time
 import os
 import io
+import re
 import random
 import logging
 import signal
@@ -202,6 +203,24 @@ def load_history():
 
 
 # ---------------- 大模型 ----------------
+_FENCE_LINE_RE = re.compile(r"^[ \t]*```.*$", re.M)
+
+
+def strip_code_fences(text):
+    """剥掉三反引号代码围栏（含 ```lang 与结尾 ```）。
+
+    原因：飞书会把 ``` 渲染成「代码块」，教学平台会据此把**整条消息**判成
+    "资料"而不是答案，回一句"这看起来是一段资料，不是答案" —— 这题就白答了。
+    prompt 里已要求不要用围栏，这里再做一层兜底，确保发出去的永远是纯文本。
+    """
+    if not text or "```" not in text:
+        return text
+    cleaned = _FENCE_LINE_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
+    return cleaned.strip()
+
+
 def ask_llm(context_str):
     """把已构造好的精简上下文发给大模型。"""
     api_key = LLM.get("api_key", "").strip()
@@ -1027,6 +1046,13 @@ def main():
                             log("  生成失败，下轮重试", "warning")
                             time.sleep(interval)
                             continue
+
+                        # 兜底：剥掉 ``` 围栏（会被平台判成"资料"而不是答案）
+                        if "```" in answer:
+                            stripped = strip_code_fences(answer)
+                            if stripped:
+                                log("  （已自动剥离 ``` 代码围栏，避免被判为资料）", "warning")
+                                answer = stripped
 
                         # 多行回复（如代码题）按行打印，便于在日志里核对格式
                         if "\n" in answer:
