@@ -85,6 +85,41 @@ def _clean_old(prefix: str, keep: Path) -> None:
             print(f"  ! 删不掉 {p.name}: {e}")
 
 
+def check_embedded_prompt() -> bool:
+    """校验 launcher.py 内嵌示例的 system_prompt 与 config.example.yaml 是否一致。
+
+    两者脱节会导致「首次配置」（包里没有 config.example.yaml 时）生成的
+    config.yaml 带上旧规则，出现"改了 prompt 却没生效"的怪象。
+    """
+    try:
+        import yaml
+    except Exception:
+        print("  ! 未安装 pyyaml，跳过内嵌示例一致性校验")
+        return True
+    launcher = ROOT / "launcher.py"
+    example = ROOT / "config.example.yaml"
+    if not (launcher.exists() and example.exists()):
+        return True
+    m = re.search(r'EMBEDDED_EXAMPLE = """(.*?)"""',
+                  launcher.read_text(encoding="utf-8"), re.S)
+    if not m:
+        print("  ! launcher.py 里找不到 EMBEDDED_EXAMPLE，跳过校验")
+        return True
+    try:
+        emb = ((yaml.safe_load(m.group(1)) or {}).get("llm") or {}).get("system_prompt", "").strip()
+        ex = ((yaml.safe_load(example.read_text(encoding="utf-8")) or {}).get("llm") or {}).get("system_prompt", "").strip()
+    except Exception as e:
+        print(f"  ! 解析 prompt 失败，跳过校验：{e}")
+        return True
+    if emb != ex:
+        print(f"  ✗ 严重：launcher.py 内嵌示例的 system_prompt（{len(emb)} 字符）"
+              f"与 config.example.yaml（{len(ex)} 字符）不一致！")
+        print("    → 首次配置会用到旧规则。请先同步 launcher.py 的 EMBEDDED_EXAMPLE。")
+        return False
+    print(f"  ✓ launcher 内嵌示例与 config.example.yaml 一致（prompt {len(ex)} 字符）")
+    return True
+
+
 def _zip_dir(src: Path, out: Path, root_name: str) -> tuple:
     """把 src 目录打成 out，压缩包内前缀为 root_name/。返回 (文件数, 字节)。"""
     files = [p for p in sorted(src.rglob("*")) if p.is_file()]
@@ -167,6 +202,11 @@ def main() -> int:
         write_version(ver)
 
     print(f"===== 打包版本 v{ver} =====\n")
+    if not args.no_validate:
+        if not check_embedded_prompt():
+            print("\n[中止] 内嵌示例与 config.example.yaml 的 prompt 不一致，请先同步。")
+            return 2
+        print()
     made = []
     if not args.source_only:
         made.append(build_green(ver, validate=not args.no_validate))

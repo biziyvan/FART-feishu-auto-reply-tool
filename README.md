@@ -393,6 +393,11 @@ python sync_prompt.py --apply    # 实际写入（自动 .bak 备份）
 它对待两类文件不同：模板类整文件复制（保住注释），你已生成的 `config.yaml`
 只替换提示词（**保住 api_key 等设置**）。改完**必须重启程序**才生效。
 
+> ⚠️ **还有一处最容易漏**：`launcher.py` 顶部的 `EMBEDDED_EXAMPLE` 是**内嵌的默认配置**，
+> 只在打包版首次运行、且目录里找不到 `config.example.yaml` 时才作为兜底。它是一份
+> **独立副本**，改了 `config.example.yaml` 必须**同步它**，否则那台机器首次配置会生成旧规则。
+> `package_release.py` 已内置一致性校验：两者 `system_prompt` 不一致会**直接中止打包**（除非加 `--no-validate`）。
+
 **Q：代码题是多行回复，会被压成一行或丢缩进吗？**
 
 不会。实测 CDP 输入层对 `\n` 换行与缩进 **100% 保留**（输入框 `white-space: break-spaces`），
