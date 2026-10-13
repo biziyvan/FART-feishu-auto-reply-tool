@@ -17,9 +17,10 @@
 import re
 
 # ---------- 消息类型 ----------
-TYPE_QUESTION = "question"      # 正式题目（AI 自适应问答）
+TYPE_QUESTION = "question"      # 正式题目（AI 自适应问答 / 当前题目）
 TYPE_FEEDBACK = "feedback"      # 学习反馈（答对/答错+解析）
 TYPE_REMINDER = "reminder"      # 学习提醒（催答题）
+TYPE_COURSE = "course"          # 课程名提示（"请输入课程名称，如「智能合约」"）
 TYPE_SWITCH = "switch"          # 课程切换
 TYPE_MINE = "mine"              # 我发的
 TYPE_OTHER = "other"            # 其他
@@ -63,6 +64,37 @@ def clean_text(text: str) -> str:
     return out
 
 
+# ---------- 「请输入课程名」提示 ----------
+# 机器人有时（如每日提醒、课程结束）只发一句"开始学习/输入课程名称"的话，
+# 里面**没有题目**，只要求你回复课程名。程序识别到就自动回复课程名开课。
+# 注意：必须与「学习反馈」尾部那句"⚠️ 需切换课程，直接发新的课程名（如「密码学基础」）"
+# 区分开 —— 后者是**附带在反馈卡里**的，不能回复课程名。
+_COURSE_HINT_RE = re.compile(
+    r"(直接回复课程名|回复课程名|请输入课程名称|输入课程名称|回复课程名称|"
+    r"请输入你要?学习的课程|回复你想学习的课程|你想学习的课程|"
+    r"如要开始学习|开始学习[，,]?\s*请?输入|开始练习)"
+)
+# 含以下字样的一律**不**当作课程名提示（题目/反馈卡里也可能出现"课程名"字样）
+_COURSE_EXCLUDE_RE = re.compile(
+    r"(学习反馈|掌握度|第\s*\d+\s*题|答对了|答错了|当前题目|选项作答)"
+)
+
+
+def is_course_prompt(text: str) -> bool:
+    """是否是"请你输入课程名"的提示（无题目）。
+
+    例如：
+      「如要开始学习，请输入课程名称，如「智能合约」」
+      「学习提醒 … 直接回复课程名（如「智能合约」）开始练习。」
+    """
+    t = clean_text(text) if text else ""
+    if not t:
+        return False
+    if _COURSE_EXCLUDE_RE.search(t):
+        return False
+    return bool(_COURSE_HINT_RE.search(t))
+
+
 def classify(text: str) -> str:
     """判断消息类型。"""
     if not text:
@@ -73,6 +105,11 @@ def classify(text: str) -> str:
         return TYPE_FEEDBACK
     if "学习提醒" in text or "没有答题啦" in text:
         return TYPE_REMINDER
+    # 第③种题目推送形态：形如「请直接回复选项作答 / 当前题目：…」，常不带题号
+    if "当前题目" in text or "请直接回复选项作答" in text:
+        return TYPE_QUESTION
+    if is_course_prompt(text):
+        return TYPE_COURSE
     if "课程切换" in text or "开始学习：" in text:
         return TYPE_SWITCH
     return TYPE_OTHER
@@ -102,7 +139,8 @@ def denoise(messages, drop_reminders=True, dedup=True):
     """
     过滤噪音消息。
     messages: [{"id","is_from_other","text"}]
-    drop_reminders: 是否丢弃"学习提醒"（默认丢弃，避免误导 AI 答课程名）
+    drop_reminders: 是否丢弃"学习提醒"与"课程名提示"（默认丢弃：这两类对
+                    判断"该答什么"没有帮助，程序会另行处理课程名提示）
     dedup: 是否对"连续重复"的相同内容去重（机器人会重复推送同一题，必须去重）
     """
     out = []
@@ -111,7 +149,7 @@ def denoise(messages, drop_reminders=True, dedup=True):
         t = clean_text(m.get("text", ""))
         if not t:
             continue
-        if drop_reminders and classify(t) == TYPE_REMINDER:
+        if drop_reminders and classify(t) in (TYPE_REMINDER, TYPE_COURSE):
             continue
 
         if dedup:
@@ -220,8 +258,11 @@ def build_context(messages, max_chars=3000, keep_questions=5, current=None):
             lines.append(f"[{who}] {content}")
             lines.append("")
             lines.append("↑↑↑ 上面这一条是机器人【最新】发来的消息，")
-            if (current or {}).get("body"):
-                lines.append(f"我需要回答的就是其中这道题：第 {(current or {}).get('qnum')} 题 —— {(current or {}).get('body')}")
+            _q = (current or {}).get("qnum")
+            _b = (current or {}).get("body")
+            _tag = f"第 {_q} 题" if _q is not None else "最新这道题"
+            if _b:
+                lines.append(f"我需要回答的就是其中这道题：{_tag} —— {_b}")
             else:
                 lines.append("我需要回答的就是其中最新提出的那道题。")
             lines.append("注意：只需要回答这一道题，不要回答更早的题目。")
@@ -270,6 +311,14 @@ _TRAILING_Q_RE = re.compile(r"掌握度[:：]\s*\d+\s*%\s*(.*)$", re.S)
 _ASK_RE = re.compile(r"第\s*(\d+)\s*题")
 # 题目尾部开始的提示行：这些之后的内容一律不要
 _TAIL_STOP_RE = re.compile(r"💡\s*直接回复|⚠️\s*需切换课程|🔍")
+# 第③种推送形态「请直接回复选项作答 / 当前题目：…」的锚点与尾部截断
+_CQ_ANCHOR_RE = re.compile(r"当前题目\s*[：:]?\s*")
+_CQ_HEAD_JUNK_RE = re.compile(r"^\s*请直接回复选项作答\s*")
+_CQ_STOP_RE = re.compile(
+    r"\n\s*(?:回复\s*A\s*/\s*B|不明白题目意思|想结束练习|回复「|回复\"|💡|⚠️)"
+)
+# 卡片里题号形如「第 5 题（掌握度 0%）」，题号后面可能带括号说明
+_QNUM_LEAD_RE = re.compile(r"^\s*第\s*(\d+)\s*题\s*(?:[（(][^）)]*[）)]\s*)?[：:]?\s*")
 # 选项行（A. / B、 / C) / D． 等形式）
 _OPTION_LINE_RE = re.compile(r"^\s*[A-D][\.、．)）]\s*")
 # 题干里需要去掉的前后缀碎片
@@ -302,9 +351,10 @@ def extract_pending_question(text):
     """
     从单条机器人消息里抽出"真正要回答的那道题"。
 
-    机器人有两种消息形态：
-      A. 「AI 自适应问答」卡片：整条就是一道题
+    机器人有三种消息形态：
+      A. 「AI 自适应问答」卡片：整条就是一道题（带「第 N 题」）
       B. 「学习反馈」卡片：先给上一题判定，尾部夹带"第 N 题 + 题干"
+      C. 「请直接回复选项作答 / 当前题目：…」：整条就是一道题，**常不带题号**
 
     返回 (题号 or None, 题干 str or None)
     """
@@ -334,6 +384,25 @@ def extract_pending_question(text):
                 body = rest[qm.end():]
                 body = _TAIL_STOP_RE.split(body)[0]
                 return int(qm.group(1)), _strip_body(body)
+
+    # C. 第③种推送形态：以「当前题目：」为锚（可能带「第 N 题」，也常不带）
+    if "当前题目" in text or "请直接回复选项作答" in text:
+        m = _CQ_ANCHOR_RE.search(text)
+        if m:
+            rest = text[m.end():]
+        else:
+            # 没有「当前题目」锚点，就把开头的"请直接回复选项作答"去掉
+            rest = _CQ_HEAD_JUNK_RE.sub("", text)
+        qm = _QNUM_LEAD_RE.match(rest)
+        if qm:
+            qnum = int(qm.group(1))
+            body = rest[qm.end():]
+        else:
+            qnum = None
+            body = rest
+        body = _CQ_STOP_RE.split(body)[0]
+        body = _TAIL_STOP_RE.split(body)[0]
+        return qnum, _strip_body(body)
 
     return None, None
 
@@ -382,8 +451,21 @@ def fp_from_str(s):
 def _fp_match(fp, answered_fps):
     """
     判断指纹是否已答过。
-    除完全相等外，还做"同题号 + 题干互为前缀"的模糊匹配，
-    用于覆盖「同一题在反馈/提问两种形态下文字略有差异」的情况。
+    除完全相等外，还做"一方完整包含另一方"的模糊匹配，用于覆盖
+    「同一题在不同推送形态下文字略有差异」的情况（反馈卡常截断题干或
+    附带「🪜 考点提示：F」等尾注；第③种形态「当前题目：…」常不带题号）。
+    仅当两边都带题号且不同时才判定为"不同题"；任一方无题号时靠题干整体
+    包含来判定（并要求重叠≥12 字，避免极短题干误判）。
+    ...
+
+    ⚠️ 曾经这里还有一条 `core[:16] == oc[:16]` 的"前 16 字符相同即同题"规则，
+    后果严重，已删除：本项目题目大量以「在Solidity智能合约中若要…」这类
+    固定句式开头，只要**题号相同**，两道彻底不同的题就会被误判为同题 →
+    find_pending_question 在 latest_only 模式下直接返回"无新题" →
+    程序持续待命、**永不作答**（实测：第 10 题因与旧第 10 题共享前 16 字，
+    被静默跳过 7 分钟）。
+    短前缀比较**不能**用于判同，必须要求"整体包含"。
+
     answered_fps: 指纹字符串集合（见 fp_to_str）
     """
     if not fp:
@@ -391,20 +473,30 @@ def _fp_match(fp, answered_fps):
     if fp_to_str(fp) in answered_fps:
         return True
     qnum, core = fp
+    if not core:
+        return False
     for s in answered_fps:
         old = fp_from_str(s)
         if not old:
             continue
         oq, oc = old
-        if oq is not None and oq == qnum and core and oc:
-            if core in oc or oc in core:
-                return True
-            if core[:16] and core[:16] == oc[:16]:
-                return True
+        if not oc:
+            continue
+        # 两边都有题号且不同 → 一定不是同一题（避免"同题号不同题"误判）
+        if oq is not None and qnum is not None and oq != qnum:
+            continue
+        # 一方完整包含另一方（含前缀/后缀截断）→ 视为同一题。
+        # 第③种推送形态（「当前题目：…」）常常**不带题号**（qnum=None），
+        # 此时只能靠题干整体包含来判定；为避免极短题干误判，要求重叠长度≥12。
+        if oq is None or qnum is None:
+            if min(len(core), len(oc)) < 12:
+                continue
+        if core in oc or oc in core:
+            return True
     return False
 
 
-def find_pending_question(messages, answered_fps=None, latest_only=True):
+def find_pending_question(messages, answered_fps=None, latest_only=True, on_skip=None):
     """
     从消息列表里找出"当前应该回答的那道题"。
 
@@ -416,6 +508,11 @@ def find_pending_question(messages, answered_fps=None, latest_only=True):
          即【只答最新一题，不补答历史旧题】——避免程序启动时把一堆旧题
          全部刷一遍。
       5. latest_only=False：往回找第一道未答的题（用于手动补答）
+
+    on_skip: 可选回调 on_skip(qnum, fp)。当某道题因"指纹已答过"被跳过时调用，
+             用于让上层把"跳过了哪道题"记进日志 ——
+             否则日志里只有"待命"，无法区分"机器人没推新题"与
+             "推了新题但被判成旧题"（后者曾导致某题被静默跳过 7 分钟）。
 
     返回 (消息 dict, 题号, 题干) 或 (None, None, None)
     """
@@ -433,6 +530,11 @@ def find_pending_question(messages, answered_fps=None, latest_only=True):
             continue
         qnum, body = extract_pending_question(t)
         if _fp_match(fp, answered_fps):
+            if on_skip:
+                try:
+                    on_skip(qnum, fp)
+                except Exception:
+                    pass
             if latest_only:
                 # 最新这一题已答过 → 认为当前没有待答题，不再往前补
                 return None, None, None

@@ -1,463 +1,194 @@
-# 飞书教学机器人 · 自动回复助手
+# 飞书 AI 教学平台 · 自动回复
 
-用 Playwright 驱动真实浏览器，自动监控飞书（Lark）「AI 教学平台」类教学机器人的提问，
-调用大模型生成答案并自动回复。
+自动监控「AI教学平台」机器人的提问 → 调用大模型生成答案 → 自动发送回复。
 
-> **适用场景**：老师在群里发放的第三方教学机器人，会定时推送题目要求作答。
-> 由于无法获得该机器人的 API 或事件订阅权限，因此采用**浏览器自动化**方案。
+**技术路线**：Playwright + Edge 浏览器自动化（有头模式，复用登录态）
 
 ---
 
-## ✨ 特性
+## 一、环境（已配置完成）
 
-- **真实浏览器驱动**：基于 Playwright + Edge，有头模式运行，规避无头风控
-- **登录态复用**：登录一次长期有效，无需反复扫码
-- **抗浏览器遮挡**：窗口被盖住 / 最小化后仍能正常读消息、发消息
-- **时序正确**：用雪花 ID 还原消息真实时间序，避免"答非所问"
-- **智能选题**：自动识别「提问卡片」与「反馈卡片夹带的下一题」
-- **去噪省 token**：过滤催答提醒和重复推送，上下文压缩约 85%
-- **严格只发一次**：基于消息计数校验，杜绝重复发送
-- **失联自愈**：页面异常时自动重载 / 重建会话
-- **内置自检工具**：发送链路、后台能力、失联恢复均可一键验证
-- **绿色免安装版**：打包好的 exe + 图形配置向导，不装 Python 也能用（Windows）
-- **作答风格可调**：代码题默认「极简、不写注释、一句说明」，改提示词即可调整
+- Python 虚拟环境：`.venv`（已装 playwright / pyyaml / requests）
+- 浏览器：**Edge**（`channel: msedge`，无需额外下载内核）
+- 登录态：保存在 `./.browser_data`，**登录一次长期复用**
 
----
-
-## 📦 环境准备
-
-需要 Python 3.10+（当前依赖 playwright 1.63，它要求 `Requires-Python: >=3.10`）。
-
+如需重装：
 ```bash
-# 1. 创建虚拟环境
 python -m venv .venv
-
-# 2. 安装依赖（国内建议用清华镜像）
-.venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-# Linux / macOS
-.venv/bin/python -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install playwright pyyaml requests -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
-
-> 使用 Edge / Chrome 通道**无需**执行 `playwright install chromium`。
-> 若想用 Playwright 自带内核，把 `config.yaml` 里 `browser.channel` 留空，
-> 再执行 `.venv\Scripts\python.exe -m playwright install chromium`。
 
 ---
 
-## 🚀 快速开始
+## 二、使用步骤
 
-> **不想装 Python？** Windows 用户可直接用打包好的绿色免安装版，
-> 见下方「[绿色免安装版](#-绿色免安装版windows)」。需要改代码或自行部署时才走下面的源码流程。
-
-### 1. 配置
-
-```bash
-# 复制示例配置
-cp config.example.yaml config.yaml     # Windows: copy config.example.yaml config.yaml
-```
-
-编辑 `config.yaml`，填入：
-- `feishu.base_url` —— 你的飞书地址（浏览器地址栏复制）
-- `feishu.target_chat_name` —— 目标会话名
-- `llm.api_key` —— 大模型 API Key
-
-**不想让密钥落盘？** 改用环境变量（优先级高于配置文件）：
-
-```bash
-set FEISHU_BASE_URL=https://你的租户.feishu.cn/next/messenger/
-set FEISHU_TARGET_CHAT=AI教学平台
-set LLM_API_KEY=sk-xxxxxxxx
-```
-
-### 2. 抓取一次历史上下文
+### 第 1 步：抓取历史对话（偶尔跑一次）
 
 ```bash
 .venv\Scripts\python.exe fetch_history.py
 ```
 
-首次运行会弹出浏览器，**扫码登录**（登录态会记住）。
-该脚本滚动抓取完整对话历史，去噪后存为 `history.json`，供后续作上下文。
-换课程或想刷新上下文时再跑一次即可。
+滚动抓取完整对话历史，**去噪去重**后保存为 `history.json`，供主程序作上下文。
+- 建议：换课程、或想更新上下文时跑一次
+- 平时**不需要**反复跑
 
-### 3. 启动自动回复
+### 第 2 步：启动自动回复
 
 ```bash
-# 持续运行
+.venv\Scripts\python.exe step2_auto_reply.py
+```
+
+常用参数：
+```bash
+# 一直运行（默认）
 .venv\Scripts\python.exe step2_auto_reply.py
 
 # 最多回复 10 次后停止
 .venv\Scripts\python.exe step2_auto_reply.py --max-replies 10
 
-# 干跑：只生成不发送（联调用）
+# 干跑：只生成答案不发送（测试用）
 .venv\Scripts\python.exe step2_auto_reply.py --dry-run --max-replies 5
 ```
 
-按 `Ctrl+C` 停止。
+**Ctrl+C 停止**。
 
----
-
-## 🖥️ 绿色免安装版（Windows）
-
-打包好的 `飞书自动回复助手-绿色版.zip`，**解压即用，无需安装 Python**。
-
-1. 解压得到 `飞书自动回复助手/` 目录（路径别太深，避免超长路径问题）
-2. 双击 `飞书自动回复助手.exe`
-3. 首次启动弹出**配置向导**：填飞书地址、会话名、大模型 API Key
-4. 点「保存并开始」，浏览器自动拉起，**扫码登录一次**即可长期使用
-
-**几个容易踩的点**
-
-| 现象 | 说明 |
-|---|---|
-| 改了配置/Prompt 没反应 | 程序读的是 **exe 同目录**下的 `config.yaml`，改别处的无效；且**改完必须重启程序** |
-| 想重新配置 | 删掉同目录 `config.yaml`，重启 exe 会再弹向导 |
-| 双击没反应 | 看同目录 `launcher_error.log`（窗口程序没有控制台，错误都写这里） |
-| 启动报浏览器相关错误 | 多为配置目录被残留浏览器占用，程序会自动重试；见「常见问题」 |
-| 运行日志 | 同目录 `auto_reply.log`（历史）/ `live.log`（实时） |
-
-### 自行重新打包
-
-打包环境请用 **python.org 官方安装版 Python 3.13**（自带 tkinter），
-这样 playwright 能跟上最新版本、不会被锁死在旧版：
+### 可选：环境验证 / 能力自检
 
 ```bash
-pip install playwright pyyaml requests pyinstaller   # 依赖一个都不能少
-python -m PyInstaller build.spec --noconfirm --distpath dist --workpath build/wk
-
-# PyInstaller 只产出 exe + _internal/，顶层资源要手动补齐
-cp config.example.yaml 使用说明.txt LICENSE dist/飞书自动回复助手/
-
-# 打带版本号的分发包（自动清理同前缀旧包 + 解压验收）
-python package_release.py                 # 按 VERSION 的当前版本打包
-python package_release.py --bump patch    # 版本号 +1 再打包（1.0.1 -> 1.0.2）
+.venv\Scripts\python.exe step1_check_login.py    # 登录+定位会话+读消息
+.venv\Scripts\python.exe test_background.py      # 验证后台/遮挡下能否正常工作
+.venv\Scripts\python.exe test_occlusion.py       # 验证页面失联后能否自动恢复
 ```
-
-> **分发包文件名必须带版本号**：`飞书自动回复助手-绿色版-v1.0.1.zip`。
-> 版本号的唯一来源是仓库根目录的 `VERSION` 文件（语义化 `X.Y.Z`）；
-> **压缩包内的目录名恒为 `飞书自动回复助手/`（不带版本）**，保证用户解压路径稳定。
-> 打包统一走 `package_release.py`，它会顺手清掉同名旧包，并做解压验收
-> （校验顶层目录名、是否误混入 `config.yaml` / `.browser_data` 等用户数据）。
-
-> **三个必须记住的坑**
->
-> 1. **别用"精简版 / 托管版"Python**：某些发行版编译时裁掉了 Tk（`Lib/tkinter` 是空的、
->    没有 `_tkinter.pyd`），`import tkinter` 直接失败。先用 `py -0p` 枚举机器上所有
->    Python、挨个测 tkinter，挑**带 Tk 且版本最新**的那个 —— 不要因为一个解释器缺 Tk
->    就断定"整个版本都缺"（这个误判会把项目逼回老 Python，进而被老 playwright 锁死）。
-> 2. **依赖必须装齐**：`build.spec` 里 `collect_all(pkg)` 对缺失的包是 **`try/except pass`
->    静默跳过**的，漏装不报错，只会让打出的 exe 一启动就 `ModuleNotFoundError`。
-> 3. **exe 与 `_internal/` 必须同版本配套**：跨 Python 版本升级时只能**整体替换**整个
->    目录，单独替换 exe 会启动即死（新 exe 找不到自己需要的 `pythonXXX.dll`）。
->
-> **为什么强调用新版 Python**：打包会把 playwright **固化**进 exe，而用户机器上的浏览器
-> 是独立自动更新的。老 playwright 迟早跟不上新浏览器（例如 Edge 155 引入"兼容层重启"后，
-> playwright 1.48 启动即秒退）。用最新 Python ⇒ 用最新 playwright ⇒ 抗浏览器升级能力强。
-
-> **打包后一定要 `ls dist/` 核对产物**：只看日志容易被过滤掉失败信息（退出码仍是 0）。
 
 ---
 
-## 🧰 内置工具
-
-| 脚本 | 用途 |
-|---|---|
-| `step1_check_login.py` | 环境验证：登录 → 定位会话 → 读消息 |
-| `test_send.py` | 发送链路自检（不发送真实消息） |
-| `test_multiline.py` | 多行 / 代码块输入能力自检（不发送） |
-| `test_background.py` | 后台 / 遮挡环境读写能力自检 |
-| `test_occlusion.py` | 页面失联后的自动恢复自检 |
-| `test_minimize.py` | 窗口最小化下运行能力自检（真正调 `SW_MINIMIZE`，验证定时器/DOM 不退化） |
-| `test_code_style.py` | 代码题作答风格自检（只调模型，不启浏览器，几秒出结果） |
-| `sync_prompt.py` | 把最新提示词同步到各处 `config.yaml`（改 prompt 后必用） |
-| `diag_dom.py` | 对比 DOM 顺序与真实时间顺序，排查时序问题 |
-| `diag_page.py` | 打印页面实况（URL / 可见性 / 消息列表） |
-| `diag_browser.py` | 浏览器启动分层诊断（环境 → 配置目录 → 占用进程 → 启动实测，直接给结论） |
-
----
-
-## 🏗️ 架构
-
-```
-launcher.py             图形界面（打包版入口）：配置向导 → 拉起子进程 → 实时日志
-  └── runtime.py          路径解析（源码运行 / 打包运行两种形态）
-
-step2_auto_reply.py     主程序（轮询 → 选题 → 生成 → 发送 → 状态管理）
-  ├── settings.py         配置加载（环境变量 > config.yaml > example）
-  ├── denoise.py          去噪 / 选题 / 上下文压缩（核心逻辑）
-  └── fetch_history.py    历史抓取（滚动累积）
-```
-
-### 核心机制
-
-**1. 只答最新一题（`reply_strategy.latest_only`）**
-
-程序只在机器人推了新题、且是最新那道题时回复。
-答完进入「待命」状态，日志会打印：
-
-```
-[待命] 暂无新题，持续监控中… (已轮询 12 轮 / DOM 9 条 / 池 110 条 / 最新: ...)
-```
-
-**看到这行说明程序正常在等新题**，不是故障。
-
-**2. 正确识别该答哪道题**
-
-机器人有两种消息形态：
-- `AI 自适应问答` 卡片 —— 正式题目
-- `学习反馈` 卡片 —— 上一题判定，**尾部会夹带下一题**
-
-程序用「题号 + 题干核心」做**题目指纹**判重，并在上下文里显式标注
-`★当前待答题目★`，避免模型串题。
-
-> ⚠️ **题干与选项必须一起进上下文**：选择题答「内容而非字母」的常见根因，
-> 就是提取题目时把 A/B/C/D 选项丢了。本程序以「掌握度: N%」为锚，把「第 N 题」
-> 到卡片尾部之间的**全部内容（题干 + 选项）**完整保留，并规范化重复前缀
-> （`A. A. start.sh` → `A. start.sh`）；历史反馈卡片也不再被截断，选项不会被切掉。
-
-**3. 用雪花 ID 还原时间序**
-
-飞书消息 ID 是 Snowflake ID，高位即时间戳：
-
-```python
-def snowflake_ts(mid):
-    return int(mid) >> 22
-```
-
-这比 DOM 顺序可靠得多 —— 虚拟滚动下 DOM 顺序常与真实时间不一致。
-
-**4. 抗浏览器遮挡**
-
-Chromium 会对后台标签页做三重降级（定时器节流 / 渲染冻结 / CDP 受阻）。
-程序通过启动参数关闭这些降级，并伪装页面可见性：
-
-```python
-args = [
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
-]
-ctx.add_init_script("""
-    Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
-    Object.defineProperty(document, 'hidden', {get: () => false});
-""")
-```
-
-> 实测：遮挡状态下 `setInterval(100ms)` 3 秒内仍触发 **30/30 次**
-> （默认会降到 0~1 次）。
-
-**5. 严格只发一次**
-
-飞书输入框是 **Lark 富文本编辑器**，直接改 DOM 不会同步编辑器状态。
-程序改用 CDP 原生输入层：
-
-```python
-cdp.send("Input.insertText", {"text": text})          # 写入
-cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", ...})  # 发送
-```
-
-且**成功判据是"消息条数 +1"，而不是"输入框是否为空"**
-（后者会因富文本残留而误判，导致重复发送）。
-
-**6. 多行内容（代码题）**
-
-代码题回复是多行带缩进的文本。飞书输入框是 `white-space: break-spaces`，
-所以用同一个 CDP `Input.insertText` 传带 `\n` 的文本即可 ——
-换行会变成多个 `<div class="ace-line">` 段落，**缩进完整保留**，一次 Enter 全部发出。
-
-```python
-cdp.send("Input.insertText", {"text": "line1\n    indented\nline3"})
-```
-
-> 排查提示：Lark 会给每行末尾加一个 `\u200b`（零宽空格）锚点，真人手打多行也一样。
-> **比对文本前必须剔除它**，否则会把"完全一致"误判成不一致。
-
-**7. ⚠️ 代码题绝对不要用 ``` 代码围栏**
-
-飞书会把开头的 ``` 渲染成「代码块」，教学平台的机器人据此把**整条消息**判成
-"资料"而不是答案，直接回一句：
-
-> 这看起来是一段资料，不是答案
-> 如果你想让我根据这段内容出题，请回复：出题
-> 如果是要作答，直接回复选项字母，例如 A。
-
-**这题就等于白答了**（不评分、不算作答）。代码题必须发**纯文本代码**：
-保留换行与缩进，但把 ``` 和 ```lang 去掉。
-
-程序里有两道保险：
-
-1. `system_prompt` 的【代码题】段明确要求"不要用围栏"，示例也是不带围栏的；
-2. 发送前用 `strip_code_fences()` 兜底，一旦模型还是加了围栏就自动剥离
-   （日志会打印「已自动剥离 ``` 代码围栏」）。
-
-> 反例：`\`\`\`solidity` + 代码 + `\`\`\`` → 会被判成资料。
-> 正例：直接发 `contract X { ... }` + 一句话说明 → 正常判分。
-
----
-
-## ⚙️ 配置项
+## 三、配置说明（config.yaml）
 
 | 配置项 | 说明 |
 |---|---|
 | `feishu.base_url` | 飞书网页版地址 |
-| `feishu.target_chat_name` | 目标会话名 |
-| `browser.channel` | `msedge` / `chrome` / 留空用自带内核 |
-| `browser.headless` | **必须 false**，无头会被风控 |
-| `browser.user_data_dir` | 登录态保存位置 |
-| `polling.interval` | 轮询间隔（秒） |
-| `polling.jitter` | 随机抖动（秒），降低风控概率 |
-| `context.context_size` | 上下文消息条数上限 |
-| `context.max_chars` | 上下文最大字符数（控 token） |
-| `reply_strategy.latest_only` | 只答最新一题（推荐 true） |
-| `llm.*` | 模型接口、密钥、模型名、提示词 |
-| `llm.enable_thinking` | 思考型模型建议 false（快 50 倍） |
-| `reply.send_delay_min/max` | 发送前随机延迟（秒） |
+| `feishu.target_chat_name` | 目标会话名，默认「AI教学平台」 |
+| `browser.channel` | `msedge`（Edge）/ `chrome`（Chrome） |
+| `browser.headless` | **必须 false**，飞书对无头浏览器风控严格 |
+| `polling.interval` | 轮询间隔秒数，默认 5 |
+| `polling.jitter` | 随机抖动，降低风控概率 |
+| `context.context_size` | 上下文消息条数上限，默认 30 |
+| `context.max_chars` | 上下文最大字符数，默认 3000（**控制 token 开支**） |
+| `reply_strategy.latest_only` | **只答最新一题**（默认 true），不补答历史旧题 |
+| `llm.model` | 模型名，默认 `Qwen/Qwen3.5-35B-A3B` |
+| `llm.enable_thinking` | 是否开启思考模式，默认 **false**（快 50 倍） |
+| `llm.system_prompt` | 系统提示词（**准确率关键**） |
+| `reply.send_delay_min/max` | 发送前随机延迟（秒），模拟真人 |
 
 ---
 
-## ❓ 常见问题
-
-**Q：程序日志显示"待命"，是不是坏了？**
-
-不是。说明已答完最新题，在等机器人推新题。只有出现 `循环出错` /
-`页面失联` / 进程消失才是真故障。
-
-**Q：换了模型，回答质量变差？**
-
-若使用 Qwen3.5 等**思考型模型**，务必设 `enable_thinking: false`，
-否则响应慢（几十秒）且容易跑题。
-
-**Q：上下文格式该怎么构造？**
-
-必须用「**单条 user 消息打包**」，不要用 assistant / user 多轮交替 ——
-后者会触发接口报错 `No user query found`，且模型容易串题。
-
-**Q：浏览器被其他窗口盖住就不工作了？**
-
-已在代码层面加固（见上文「抗浏览器遮挡」）。但**直接关闭浏览器窗口**
-仍会导致页面丢失，程序会尝试自动恢复。
-
-**Q：双击后任务管理器里有进程，但界面一直不出来？**
-
-典型的 **Tk transient 陷阱**。首次运行要弹配置向导，而向导是 `Toplevel`：
-若把它 `transient()` 到一个被 `withdraw()` 的隐藏 root，**在 Windows/Tk 下
-owner 不可见时该窗口不会被 map** —— 现象就是「进程在后台跑着、界面永不出现」，
-`wait_window()` 无限空等。
-
-修复要点：
-- 只在 `master.winfo_viewable()` 为真时才 `transient()`；
-- 首次配置时创建向导后显式 `deiconify() + update()`，强制把它映射出来；
-- 启动期提示统一走 Windows 原生 `MessageBoxW`，保证 Tk 未就绪时也能看到报错
-  （Tk 的 `messagebox` 在那种情况下同样弹不出来）。
-
-旧版遇到卡住：任务管理器结束 `飞书自动回复助手.exe`，换新版重开即可。
-
-**Q：异常中断后浏览器被锁住？**
-
-```bash
-taskkill /F /IM msedge.exe        # Windows
-```
-
-**Q：飞书前端升级后不工作了？**
-
-说明 DOM 选择器失效。运行 `diag_dom.py` 查看当前页面结构，对照调整
-`step2_auto_reply.py` 里的选择器（关键选择器：`.list_items`、
-`.js-message-item`、`.message-not-self`、`[contenteditable="true"]`）。
-
-**Q：想让代码题的回答更简 / 更详细，怎么改？**
-
-改 `system_prompt` 里的 `【代码题】` 段。默认口径是：**代码里一行注释都不写**，
-不写异常处理 / 参数校验 / 辅助函数 / `main` 示例，代码后**只跟一句**说明关键行作用。
-⚠️ **不要改用 ``` 代码围栏**（会被平台判成"资料"而不是答案，见上文第 7 节）。
-
-改完用离线自检确认效果（只调模型，不启浏览器，几秒出结果）：
-
-```bash
-.venv\Scripts\python.exe test_code_style.py
-```
-
-> 注意：机器人对代码题明确要求「说明关键行的作用」，**只回代码或只回字母会被判无效作答**，
-> 所以那句说明不能省，只能压缩。
-
-**Q：改了提示词，为什么没生效？**
-
-程序首次配置后只会读**自己目录**下的 `config.yaml`，**不再回头读 `config.example.yaml`**；
-打包版读的是 **exe 同目录**。用同步工具处理：
-
-```bash
-python sync_prompt.py            # 预览要改哪些文件
-python sync_prompt.py --apply    # 实际写入（自动 .bak 备份）
-```
-
-它对待两类文件不同：模板类整文件复制（保住注释），你已生成的 `config.yaml`
-只替换提示词（**保住 api_key 等设置**）。改完**必须重启程序**才生效。
-
-> ⚠️ **还有一处最容易漏**：`launcher.py` 顶部的 `EMBEDDED_EXAMPLE` 是**内嵌的默认配置**，
-> 只在打包版首次运行、且目录里找不到 `config.example.yaml` 时才作为兜底。它是一份
-> **独立副本**，改了 `config.example.yaml` 必须**同步它**，否则那台机器首次配置会生成旧规则。
-> `package_release.py` 已内置一致性校验：两者 `system_prompt` 不一致会**直接中止打包**（除非加 `--no-validate`）。
-
-**Q：代码题是多行回复，会被压成一行或丢缩进吗？**
-
-不会。实测 CDP 输入层对 `\n` 换行与缩进 **100% 保留**（输入框 `white-space: break-spaces`），
-` ``` ` 也不会触发飞书自动转代码块。可用 `test_multiline.py` 自检（**不会真的发送**）。
-
----
-
-## 📁 目录结构
+## 四、文件说明
 
 ```
-feishu-auto-reply/
-├── README.md
-├── LICENSE                     ← MIT 开源协议
-├── requirements.txt
-├── 使用说明.txt                 ← 面向非技术用户的上手说明
-│
-├── config.example.yaml         ← 配置模板（复制为 config.yaml 使用）
-├── runtime.py                  ← 路径解析（源码运行 / 打包运行两种形态）
-├── settings.py                 ← 配置加载（环境变量 > config.yaml > example）
-├── denoise.py                  ← 去噪 / 选题 / 上下文压缩
-├── step2_auto_reply.py         ← 主程序（轮询 → 选题 → 生成 → 发送）
-├── fetch_history.py            ← 历史抓取
-├── launcher.py                 ← 图形界面：配置向导 + 启停 + 实时日志
-├── build.spec                  ← PyInstaller 打包配置
-│
-├── step1_check_login.py        ← 环境验证
-├── test_send.py                ← 发送链路自检
-├── test_multiline.py           ← 多行 / 代码块输入自检
-├── test_background.py          ← 后台能力自检
-├── test_occlusion.py           ← 失联恢复自检
-├── test_code_style.py          ← 代码题作答风格自检
-├── sync_prompt.py              ← 提示词同步工具
-├── diag_dom.py                 ← 时序诊断
-└── diag_page.py                ← 页面实况诊断
-
-运行时自动生成（已 gitignore）：
-├── config.yaml                 ← 你的真实配置
-├── .browser_data/              ← 登录态（勿提交）
-├── history.json                ← 会话历史（勿提交）
-├── answered.json               ← 已答记录
-├── reply_stats.json            ← 问答记录
-├── auto_reply.log / live.log   ← 运行日志
-├── launcher_error.log          ← 图形界面错误日志（打包版）
-└── .launcher.pid               ← 单实例保护
+飞书自动回复/
+├── config.yaml            ← 配置
+├── denoise.py             ← 去噪/选题预处理模块（核心）
+├── fetch_history.py       ← 抓取历史（偶尔手动跑）
+├── step1_check_login.py   ← 环境验证
+├── step2_auto_reply.py    ← 自动回复主程序
+├── test_background.py     ← 后台/遮挡环境能力自检
+├── test_occlusion.py      ← 失联自动恢复能力自检
+├── history.json           ← 去噪后的历史上下文
+├── history_raw.json       ← 原始抓取数据
+├── answered.json          ← 已答题指纹 + 消息ID（防重复）
+├── reply_stats.json       ← 每次问答记录
+├── auto_reply.log         ← 运行日志
+├── debug_shots/           ← 诊断截图
+└── .browser_data/         ← 浏览器登录态（勿删）
 ```
 
 ---
 
-## ⚠️ 免责声明
+## 五、核心机制
 
-本项目仅供**个人学习与日常答疑辅助**使用。
+### 1. 不反复滚动
+飞书消息列表是**虚拟滚动**，且机器人会**重复推送同一题**。因此：
+- **`fetch_history.py`**：偶尔手动跑，滚动抓全量历史（边滚边累积，用消息 id 去重）
+- **`step2_auto_reply.py`**：日常运行**只读当前可见的最新消息，不滚动**
+- 结果：启动快（~8秒），不会卡死
 
-- 请遵守飞书服务条款及所在机构的规定
-- **严禁**用于考试作弊、代考或任何违反学术诚信的场景
-- 使用自动化工具与账号相关的风险（如被风控、被限制）由使用者自行承担
-- 请勿将含 API Key 的 `config.yaml`、登录态目录 `.browser_data/`
-  或聊天记录提交到公开仓库
+### 2. 只答最新一题（`reply_strategy.latest_only`）
+程序**只在机器人推了新题、而且是最新那道题**时才回复。
+- 答完后进入**待命状态**（日志显示 `[待命] 暂无新题，持续监控中…`），静默等新题
+- 程序启动时若历史里有大量积压旧题，**一律跳过**，不会刷屏
+- 若想按时间倒序把旧题全部补答，把 `latest_only` 改成 `false`
+
+### 3. 正确识别"该答哪道题"（避免答非所问）
+机器人有两种消息形态，程序能正确区分：
+- **`AI 自适应问答` 卡片** = 正式题目
+- **`学习反馈` 卡片** = 上一题判定，**尾部夹带下一题**
+
+程序的做法：
+1. 用**雪花 ID 高位时间戳**还原消息真实先后顺序（不依赖 DOM 顺序）
+2. 用 `extract_pending_question()` 从两种卡片里抽出**当前要答的那道题**
+3. 用**题目指纹**（题号 + 题干核心）判重，避免同一题重复作答
+4. 在上下文里显式标注「★当前待答题目★」，防止模型串题
+
+### 4. 去噪预处理（denoise.py）
+处理三类噪音，大幅省 token：
+- **UI 噪音**：无障碍提示、客户端下载提示等
+- **催答提醒**：`学习提醒 / 你已经XX小时没有答题`（含误导性的课程名示例）
+- **重复消息**：机器人同一题重复推送 N 次（实测重复率高达 50%）
+
+效果：**125 条 → 约 20 条，压缩率 ~85%**。
+
+### 5. 抗浏览器遮挡（重要）
+浏览器窗口被其他软件盖住、最小化、或失去焦点时，Chromium 会对页面做**降级**：
+定时器被节流、渲染被冻结、DOM 停止更新 → 读不到新消息、发送失败。
+
+程序已做四层加固：
+1. **抗节流启动参数**：关闭后台定时器节流、渲染降级、窗口遮挡检测
+2. **伪装页面可见性**：让页面始终认为自己在前台（`visibilityState=visible`）
+3. **不依赖键盘焦点发送**：用 CDP `Input.insertText` + `Input.dispatchKeyEvent`
+   直接走浏览器原生输入层，后台也能发出
+4. **失联自动恢复**：检测到页面失联时自动重载/新建页面并重进会话
+
+> 实测：浏览器被遮挡时，`setInterval(100ms)` 3 秒内仍触发 **30/30 次**（默认会降到 0~1 次）。
+
+### 6. 严格只发一次（防重复发送）
+飞书输入框是 **Lark 富文本编辑器**，发送后输入框可能残留节点。
+如果靠"输入框是否为空"判断发送是否成功，就会误判 → **重复发送**。
+
+程序的做法：
+- 成功判据是 **消息条数是否 +1**，不看输入框内容
+- 三条发送路径（CDP 原生输入 / 点击发送按钮 / 键盘模拟）**每条执行前都先复查**
+  是否已经发出，一旦确认已发出立即停止，绝不再走后续路径
+
+### 7. 模型
+`Qwen/Qwen3.5-35B-A3B`（硅基流动），**关闭思考模式**后响应约 1 秒。
 
 ---
 
-## 📄 License
+## 六、如何判断程序是否正常
 
-MIT
+程序正常运行时，日志会周期性打印：
+```
+[待命] 暂无新题，持续监控中… (已轮询 12 轮 / DOM 9 条 / 池 110 条 / 最新: ...)
+```
+
+**看到这条说明程序一切正常**，只是已经答完最新题、在等机器人推新题（这是
+`latest_only: true` 的预期行为，不是故障）。
+
+只有出现以下内容才是真故障：
+- `循环出错` / `页面失联` / `恢复失败`
+- Python 进程消失
+
+---
+
+## 七、注意事项
+
+1. **必须有头模式**：无头会被飞书识别，导致掉登录或验证
+2. **最好别关浏览器窗口**：被遮挡已能正常工作，但**直接关闭窗口**仍会导致失去登录页面（程序会尝试自动恢复）
+3. **DOM 可能变化**：飞书前端升级后选择器若失效，参照"第五节"重新探测
+4. **合规**：仅用于日常答疑场景，请勿用于考试作弊
+5. **更新上下文**：换课程后记得跑一次 `fetch_history.py`
+6. **清理残留进程**：异常中断后如遇浏览器被锁，执行
+   `taskkill //F //IM msedge.exe` 再重启程序
+7. **人机边界**：程序发出的消息末尾建议保持简洁；如担心"答太快像机器"，可在
+   `reply.send_delay_min/max` 加大延迟
+

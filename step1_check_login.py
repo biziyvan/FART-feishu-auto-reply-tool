@@ -24,11 +24,21 @@ from pathlib import Path
 import yaml
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
+# ⚠️ 这两个 import 必须放在第一个使用点（BASE_DIR）之前：
+#    原来它们在文件下半部分，而 BASE_DIR = DATA_DIR 在模块顶层执行，
+#    结果 `python step1_check_login.py` 一运行就 NameError（脚本完全不可用）。
+from runtime import DATA_DIR
+from settings import load_config
+
 
 BASE_DIR = DATA_DIR
 LOG_FILE = BASE_DIR / "step1.log"
 SHOT_DIR = BASE_DIR / "debug_shots"
-SHOT_DIR.mkdir(exist_ok=True)
+# parents=True：数据目录被整体删除时也能重建；只读目录则静默降级（不阻断登录检查）
+try:
+    SHOT_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 
 # ---------------- 日志 ----------------
@@ -48,9 +58,6 @@ def log(msg, level="info"):
 
 
 # ---------------- 配置 ----------------
-from settings import load_config  # noqa: E402
-from runtime import DATA_DIR  # noqa: E402
-
 CFG = load_config()
 FS = CFG["feishu"]
 BR = CFG["browser"]
