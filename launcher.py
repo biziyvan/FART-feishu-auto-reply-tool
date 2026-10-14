@@ -67,6 +67,7 @@ browser:
   slow_mo: 200
   viewport_width: 1440
   viewport_height: 900
+  keep_front: false
 
 polling:
   interval: 5
@@ -1886,6 +1887,14 @@ class MainWindow(tk.Tk):
         r"^(?:\d{4}-\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2})\s+"
         r"\[(INFO|WARNING|ERROR|DEBUG)\]\s?(.*)$"
     )
+    # step2 的「本次运行」统计行（界面指标从这里来）：
+    #   [统计] 本次运行: 已答 12 题 | 已判定 9 题（对 7 / 错 2）| 正确率 78%
+    # 括号做了全角/半角兼容，避免哪天日志改标点就把指标打哑。
+    RUN_STAT_RE = re.compile(
+        r"已答\s*(\d+)\s*题\s*\|\s*已判定\s*(\d+)\s*题"
+        r"\s*[（(]\s*对\s*(\d+)\s*/\s*错\s*(\d+)\s*[）)]"
+        r"\s*\|\s*正确率\s*(\d+)%"
+    )
     MAX_LOG_LINES = 4000
 
     def __init__(self):
@@ -1906,6 +1915,8 @@ class MainWindow(tk.Tk):
         self._m_run_answered = 0
         self._m_total_answered = None
         self._m_polls = 0
+        self._m_judged = 0           # 本次运行：机器人已判定的题数
+        self._m_correct = 0          # 本次运行：判对题数
         self._rec = None            # 正在作答的那条记录
         self._records = 0           # 流水条数
         self._follow = True         # 日志是否跟随最新
@@ -1980,6 +1991,7 @@ class MainWindow(tk.Tk):
 
         metric("total", "累计已答", first=True)
         metric("run", "本轮已答")
+        metric("rate", "本轮正确率")
         metric("poll", "轮询")
         metric("uptime", "运行时长")
 
@@ -2323,6 +2335,10 @@ class MainWindow(tk.Tk):
         vals = {
             "total": "—" if self._m_total_answered is None else str(self._m_total_answered),
             "run": str(self._m_run_answered),
+            # 正确率 = 判对 / 已判定。机器人判卷有延迟，还没收到反馈时显示「—」，
+            # 不拿 0% 冒充"全错"。
+            "rate": ("—" if not self._m_judged
+                     else f"{self._m_correct * 100 // self._m_judged}%"),
             "poll": str(self._m_polls),
             "uptime": self._uptime(),
         }
@@ -2358,6 +2374,8 @@ class MainWindow(tk.Tk):
                 self._run_start = time.time()
                 self._m_run_answered = 0
                 self._m_polls = 0
+                self._m_judged = 0
+                self._m_correct = 0
                 self._set_state("starting")
             elif "已记录已答题指纹" in body:
                 mm = re.search(r"已记录已答题指纹:\s*(\d+)", body)
@@ -2387,6 +2405,14 @@ class MainWindow(tk.Tk):
                     self._rec["ans"] = body.split(":", 1)[1].strip()
             elif body.startswith("|") and self._rec is not None and self._rec.get("multi"):
                 self._rec["ans"] += ("\n" if self._rec["ans"] else "") + body.lstrip("| ").rstrip()
+            elif "[统计]" in body:
+                # 以逻辑侧为准刷新指标（它才是数据的源头；界面上「已发送 ✓」
+                # 累加来的数字万一漏计，这里会纠正回来）
+                mm = self.RUN_STAT_RE.search(body)
+                if mm:
+                    self._m_run_answered = int(mm.group(1))
+                    self._m_judged = int(mm.group(2))
+                    self._m_correct = int(mm.group(3))
             elif "已发送 ✓" in body:
                 self._finish_record("ok")
                 self._m_run_answered += 1

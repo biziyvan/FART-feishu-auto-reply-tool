@@ -165,6 +165,45 @@ try:
     ok("主要按钮在首屏可见（不用滚动就能点到）",
        act_bottom <= cv.winfo_height() + 1,
        f"按钮底 {act_bottom} > 视口 {cv.winfo_height()}")
+
+    print("\n[7] 本次运行正确率指标（v1.4.0）")
+    win._switch_tab(0)
+    pump()
+    ok("指标区注册了 rate", "rate" in win._metrics, f"keys={list(win._metrics)}")
+
+    win._m_judged, win._m_correct = 0, 0
+    win._refresh_metrics()
+    pump()
+    ok("还没收到判定时显示 —（不拿 0% 冒充全错）",
+       win._metrics["rate"].cget("text") == "—",
+       win._metrics["rate"].cget("text"))
+
+    # 走一遍真实的日志链路：step2 打的那行 → _ingest → 指标
+    win._ingest("2026-10-14 21:50:00 [INFO] [统计] 本次运行: 已答 12 题 | "
+                "已判定 9 题（对 7 / 错 2）| 正确率 77%")
+    win._refresh_metrics()
+    pump()
+    check("日志解析出 对/已判定/已答",
+          (win._m_correct, win._m_judged, win._m_run_answered), (7, 9, 12))
+    check("正确率显示 77%", win._metrics["rate"].cget("text"), "77%")
+
+    # 重新启动必须清零，否则新一次运行会顶着上一次的百分比
+    win._ingest("2026-10-14 21:51:00 [INFO] 自动回复程序 启动")
+    win._refresh_metrics()
+    pump()
+    check("重新启动后归零",
+          (win._m_correct, win._m_judged, win._metrics["rate"].cget("text")),
+          (0, 0, "—"))
+
+    # 加到第 5 个指标后，横排要放得开、且不压到左侧状态标题
+    rects = sorted((w.master.winfo_rootx(),
+                    w.master.winfo_rootx() + w.master.winfo_width())
+                   for w in win._metrics.values())
+    dup = [(a, b) for a, b in zip(rects, rects[1:]) if b[0] < a[1]]
+    ok("5 个指标横向不重叠", not dup, f"重叠 {dup}")
+    title_right = win.lbl_st_main.winfo_rootx() + win.lbl_st_main.winfo_width()
+    ok("指标区没压到左侧状态标题", title_right <= rects[0][0],
+       f"标题右 {title_right} vs 最左指标 {rects[0][0]}")
 except Exception as e:
     import traceback
     traceback.print_exc()

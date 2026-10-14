@@ -504,6 +504,170 @@ except Exception as e:
 
 
 # ===============================================================
+# 8. 抢前台行为（优化清单 L4，v1.3.0 修复）
+# ===============================================================
+# 背景：主循环曾**每轮**调用 bring_to_front，配合 interval=5s 等于每 5 秒
+# 抢一次用户焦点（用户实测反馈"飞书窗口反复跳出来"）。现改为默认不抢、
+# 由 browser.keep_front 显式开启。以下断言防止它被悄悄改回旧行为。
+print("\n[8] 抢前台行为（L4）")
+
+_ksrc = Path("step2_auto_reply.py").read_text(encoding="utf-8")
+
+ok("step2 暴露 KEEP_FRONT 且为布尔",
+   isinstance(getattr(S, "KEEP_FRONT", None), bool),
+   f"KEEP_FRONT={getattr(S, 'KEEP_FRONT', '<未定义>')}")
+
+ok("默认值取自 BR.get('keep_front', False)（缺省即不抢）",
+   'KEEP_FRONT = bool(BR.get("keep_front", False))' in _ksrc)
+
+_ktree = ast.parse(_ksrc)
+_kcalls = [n for n in ast.walk(_ktree)
+           if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+           and n.func.id == "bring_to_front"]
+ok("bring_to_front(page) 在 step2 里只有 1 处调用",
+   len(_kcalls) == 1, f"实际 {len(_kcalls)} 处")
+
+_klines = _ksrc.splitlines()
+_kguard = False
+if _kcalls:
+    _j = _kcalls[0].lineno - 2          # 调用行的上一行（0-based）
+    while _j >= 0 and not _klines[_j].strip():
+        _j -= 1
+    _kguard = _j >= 0 and "KEEP_FRONT" in _klines[_j]
+ok("该调用被 `if KEEP_FRONT:` 守卫（防止改回每轮抢前台）", _kguard,
+   "若为 False，说明守卫被移除 —— 用户又会被周期性抢焦点")
+
+
+# ===============================================================
+# 9. 本次运行正确率（v1.4.0）
+# ===============================================================
+# 两个最容易出错的地方：
+#   ① 判对/判错只能认"判定行"——解析正文里也可能出现"答对了"这类措辞
+#   ② 机器人会把同一条反馈重复推送 N 次 → 必须按内容指纹去重，
+#      否则重复计入会把正确率稀释成假的
+# 另外：正确率是**跨模块契约**（step2 打日志 → launcher 解析），
+# 两边格式漂移会把指标打哑，所以这里直接拿 launcher 的正则做端到端校验。
+print("\n[9] 本次运行正确率")
+
+import ast as _ast  # noqa: E402
+import re as _re    # noqa: E402
+
+_FB_OK = ("学习反馈\n📚 正在学习：智能合约技术\n✅ 答对了\n💡\n"
+          "掌握度: 12%\n第 8 题\n在Solidity中，keccak256 函数会将字符串转换为…")
+_FB_OK_LONG = ("学习反馈\n📚 正在学习：智能合约技术\n✅ 答对了\n"
+               "💡 回答正确！`bytes32` 是固定长度为32字节的定长字节数组，"
+               "32字节正好等于256位，完美契合存储 keccak256 哈希值的需求。\n"
+               "掌握度: 27%\n第 9 题\n在资料中，我们使用 `uint` 类型来存储僵尸的 DNA…")
+_FB_NO = ("学习反馈\n📚 正在学习：智能合约技术\n❌ 答错了\n"
+          "💡 正确答案是 B。\n掌握度: 33%\n第 10 题\n下一题…")
+_FB_SYM = "学习反馈\n📚 正在学习：密码学基础\n✅\n掌握度: 10%"
+_FB_VAGUE = "学习反馈\n📚 正在学习：密码学基础\n💡 看看解析\n掌握度: 10%"
+_Q_CARD = ("AI 自适应问答\n📚 正在学习：密码学基础\n第 5 题\n下列说法正确的是？\n"
+           "A. 甲\nB. 乙\n💡 直接回复你的答案")
+
+for _nm, _txt, _want in [
+    ("答对（判定行简短）", _FB_OK, True),
+    ("答对（判定写在 💡 行）", _FB_OK_LONG, True),
+    ("答错", _FB_NO, False),
+    ("只有 ✅ 符号", _FB_SYM, True),
+    ("认不出来 → None（不硬判）", _FB_VAGUE, None),
+    ("题目卡不是反馈", _Q_CARD, None),
+]:
+    check(_nm, D.feedback_verdict(_txt), _want)
+
+check("同一条反馈重复推送 → 指纹一致（能被去重）",
+      D.feedback_key(_FB_OK) == D.feedback_key(_FB_OK), True)
+check("不同题的反馈 → 指纹不同",
+      D.feedback_key(_FB_OK) != D.feedback_key(_FB_OK_LONG), True)
+check("判定一致但夹带题号不同 → 指纹不同（不误去重）",
+      D.feedback_key(_FB_OK) != D.feedback_key(_FB_OK.replace("第 8 题", "第 9 题")), True)
+ok("指纹非空（空指纹会让去重失效）", bool(D.feedback_key(_FB_OK)))
+
+# —— 契约：step2 打的统计行必须能被 launcher 的正则解析 ——
+_lsrc = Path("launcher.py").read_text(encoding="utf-8")
+_re_obj = None
+for _node in _ast.walk(_ast.parse(_lsrc)):
+    if (isinstance(_node, _ast.Assign)
+            and any(isinstance(t, _ast.Name) and t.id == "RUN_STAT_RE"
+                    for t in _node.targets)
+            and isinstance(_node.value, _ast.Call)):
+        _pat = "".join(_ast.literal_eval(a) for a in _node.value.args
+                       if isinstance(a, _ast.Constant))
+        _re_obj = _re.compile(_pat)
+        break
+ok("launcher 定义了 RUN_STAT_RE", _re_obj is not None)
+
+if _re_obj is not None:
+    _sample = ("[统计] 本次运行: 已答 12 题 | 已判定 9 题（对 7 / 错 2）"
+               "| 正确率 77%")
+    _m = _re_obj.search(_sample)
+    ok("能解析 step2 的统计行（全角括号）", _m is not None, _sample)
+    if _m:
+        check("解析出 已答/已判定/对/错/正确率",
+              (_m.group(1), _m.group(2), _m.group(3), _m.group(4), _m.group(5)),
+              ("12", "9", "7", "2", "77"))
+    _half = _sample.replace("（", "(").replace("）", ")")
+    ok("半角括号也认（改标点不会打哑指标）", _re_obj.search(_half) is not None)
+
+ok("step2 会打出该格式的日志（格式锚点未被改掉）",
+   "[统计] 本次运行: 已答 " in _ksrc and "正确率 " in _ksrc)
+
+# —— RunStats 的真实行为（跑起来看，而不是拿 grep 查源码）——
+_RS = S.RunStats()
+
+
+def _bot(t):
+    return {"is_from_other": True, "text": t}
+
+
+def _mine(t):
+    return {"is_from_other": False, "text": t}
+
+
+# 播种前：界面上已有的历史反馈只登记、不计数
+# （这两个样本只用于播种，后面计数一律换新样本 —— 否则指纹已被去重吃掉）
+_RS.tally([_bot(_FB_OK), _bot(_FB_VAGUE), _mine(_FB_OK)])
+check("播种前的历史反馈不计入（不会顶着上次成绩启动）",
+      (_RS.judged, _RS.correct, _RS.wrong), (0, 0, 0))
+_RS.seed()
+
+_RS.tally([_bot(_FB_OK_LONG)])
+check("播种后的新反馈计入", (_RS.judged, _RS.correct, _RS.wrong), (1, 1, 0))
+
+_RS.tally([_bot(_FB_OK_LONG)] * 3)
+check("同一条反馈重复推送 3 次仍只算一次",
+      (_RS.judged, _RS.correct), (1, 1))
+
+_RS.tally([_bot(_FB_NO)])
+check("新题答错计入 wrong", (_RS.judged, _RS.correct, _RS.wrong), (2, 1, 1))
+check("正确率 = 1/2 = 50%", _RS.rate, 50)
+
+# 我发的消息、缺 is_from_other 的消息都不该算（后者是拿错数据源的典型症状）
+_RS.tally([_mine(_FB_OK.replace("第 8 题", "第 99 题")),
+           {"text": _FB_OK.replace("第 8 题", "第 98 题")},
+           _bot(_Q_CARD)])
+check("我发的 / 非反馈消息不算进正确率", _RS.judged, 2)
+
+check("有新增判定时 tally() 返回 True（界面据此刷新）",
+      _RS.tally([_bot(_FB_OK.replace("第 8 题", "第 77 题"))]), True)
+check("无新增时 tally() 返回 False（不空刷日志）",
+      _RS.tally([_bot(_FB_OK_LONG)]), False)
+
+if _re_obj is not None:
+    _line = _RS.line(7)
+    _m2 = _re_obj.search(_line)
+    ok("RunStats.line() 的真实输出能被 launcher 解析", _m2 is not None, _line)
+    if _m2:
+        check("解析出来的对/错/已答与统计对象一致",
+              (int(_m2.group(3)), int(_m2.group(4)), int(_m2.group(1))),
+              (_RS.correct, _RS.wrong, 7))
+
+check("尚无判定时 rate=0（界面据此显示 — 而不是 0%）", S.RunStats().rate, 0)
+ok("launcher 的 _ingest 有统计分支", '"[统计]" in body' in _lsrc)
+ok("launcher 的指标区注册了 rate", 'metric("rate", "本轮正确率")' in _lsrc)
+
+
+# ===============================================================
 print("\n" + "=" * 56)
 print(f"  通过 {PASS} / 失败 {FAIL}")
 print("=" * 56)

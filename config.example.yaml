@@ -30,6 +30,11 @@ browser:
   # 窗口大小
   viewport_width: 1440
   viewport_height: 900
+  # 是否周期性把浏览器窗口提到前台（默认 false）
+  #   false（推荐）：程序不抢你的焦点，前台可以照常做别的事
+  #   true：每轮轮询都把飞书窗口提到最前，可略微降低页面被系统冻结的概率，
+  #         但会每隔几秒打断你一次（这是旧版本的默认行为，仅按需开启）
+  keep_front: false
 
 # 轮询设置
 polling:

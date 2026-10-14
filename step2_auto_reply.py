@@ -111,6 +111,8 @@ from denoise import (
     fp_to_str,
     snowflake_ts,
     is_course_prompt,
+    feedback_verdict,
+    feedback_key,
 )
 
 
@@ -322,6 +324,13 @@ RSTRAT = CFG.get("reply_strategy", {})
 AUTO_COURSE = str(RSTRAT.get("auto_reply_course", "智能合约") or "").strip()
 # 同一条课程名提示在冷却期内不重复回复（秒），避免机器人重复推送时刷屏
 COURSE_COOLDOWN = float(RSTRAT.get("auto_reply_course_cooldown", 120) or 120)
+
+# 是否周期性把浏览器窗口提到前台（默认 false = 不抢用户焦点）
+#   旧行为是**每一轮都提**，配合 interval=5s 就是「每 5 秒抢一次前台」，
+#   会把用户正在用的其它窗口顶下去（实测反馈）。抗冻结的主力其实是启动参数
+#   （禁用后台节流）+ visibilityState 伪装，本项只是补充手段。
+#   确实需要时在 config.yaml 里把 browser.keep_front 设为 true。
+KEEP_FRONT = bool(BR.get("keep_front", False))
 
 # 大模型接口自适应：按 base_url 判断是硅基流动还是 DeepSeek 官方，
 # 从而决定用 enable_thinking 还是 thinking:{type:disabled}（见 settings.py）
@@ -1199,6 +1208,68 @@ def bring_to_front(page):
         pass
 
 
+# ---------------- 本次运行正确率 ----------------
+class RunStats:
+    """累计"本次运行"的作答判定，供界面显示正确率。
+
+    数据来自机器人的「学习反馈」卡（✅ 答对了 / ❌ 答错了）。答完题后
+    机器人判卷再回推，所以**判定数会滞后于已答数**，两者分开统计。
+
+    三个必须守住的口径：
+      1. 认不出判定的反馈直接跳过（不瞎猜，否则会把正确率算歪）
+      2. 首轮播种：界面上已存在的历史反馈只登记、不计数
+         —— 否则一启动就顶着上一次运行的旧成绩
+      3. 按内容指纹去重：机器人会把同一条反馈重复推送 N 次
+    """
+
+    def __init__(self):
+        self.judged = 0
+        self.correct = 0
+        self.wrong = 0
+        self._seen = set()
+        self._seeded = False
+
+    def seed(self):
+        """首轮扫描结束：此后读到的反馈才算「本次运行」。"""
+        self._seeded = True
+
+    def tally(self, msgs):
+        """累计本轮读到的反馈。返回 True 表示本次运行有新增判定。"""
+        hit = False
+        for m in msgs:
+            if not m.get("is_from_other"):
+                continue
+            t = m.get("text") or ""
+            if "学习反馈" not in t:
+                continue
+            v = feedback_verdict(t)
+            if v is None:
+                continue
+            k = feedback_key(t)
+            if not k or k in self._seen:
+                continue
+            self._seen.add(k)
+            if not self._seeded:
+                continue
+            self.judged += 1
+            if v:
+                self.correct += 1
+            else:
+                self.wrong += 1
+            hit = True
+        return hit
+
+    @property
+    def rate(self):
+        """正确率（整数百分比）。尚无判定时返回 0，由调用方决定显示成什么。"""
+        return (self.correct * 100 // self.judged) if self.judged else 0
+
+    def line(self, answered):
+        """给界面看的一行统计（launcher 的 RUN_STAT_RE 按此格式解析）。"""
+        return (f"[统计] 本次运行: 已答 {answered} 题 | 已判定 {self.judged} 题"
+                f"（对 {self.correct} / 错 {self.wrong}）| 正确率 {self.rate}%")
+
+
 # ---------------- 「请输入课程名」自动开课 ----------------
 def _course_prompt_fp(text):
     """课程名提示的内容指纹（用于去重，避免同一条提示反复回复）。"""
@@ -1373,6 +1444,10 @@ def main():
         idle_rounds = 0
         pool_max = int(CTX.get("pool_max", POOL_HARD_CAP) or POOL_HARD_CAP)
 
+        # —— 本次运行正确率 ——（口径与去重规则见 RunStats 的文档字符串）
+        run_stats = RunStats()
+        stat_dirty = [False]
+
         # 发送失败熔断 + 重试复用同一答案。
         # 原实现里"失败"只是打一行日志：该题仍属"未答"，下一轮会被再次选中
         # → 再次调用模型（输出可能不同）→ 再发一次，**无上界**；
@@ -1402,8 +1477,9 @@ def main():
                         time.sleep(interval)
                         continue
 
-                # 周期性把窗口提到前台，降低被冻结的概率
-                bring_to_front(page)
+                # 可选：把窗口提到前台（默认关闭，避免抢用户焦点，见 KEEP_FRONT）
+                if KEEP_FRONT:
+                    bring_to_front(page)
 
                 visible = snapshot_visible(page)
                 err_streak = 0  # 本轮读取成功，清零
@@ -1412,6 +1488,10 @@ def main():
                     pool[m["id"]] = m
 
                 if visible:
+                    # 作答判定统计（首轮只播种：界面上已有的历史反馈不算本次）
+                    if run_stats.tally(visible):
+                        stat_dirty[0] = True
+                    run_stats.seed()
                     # 按真实时间序整理池
                     all_msgs = sort_by_time(pool.values())
 
@@ -1439,6 +1519,7 @@ def main():
                         if _maybe_reply_course(all_msgs, state, page):
                             idle_rounds = 0
                             reply_count += 1
+                            stat_dirty[0] = True
                             stats.append({
                                 "qnum": None,
                                 "question": "[课程名提示]",
@@ -1582,6 +1663,7 @@ def main():
                             time.sleep(delay)
                             if send_reply(page, answer):
                                 log("  已发送 ✓")
+                                stat_dirty[0] = True
                                 send_fail.pop(tid, None)
                                 first_answer.pop(tid, None)
                                 if fp_s:
@@ -1638,8 +1720,14 @@ def main():
                     except Exception:
                         pass
 
+            if stat_dirty[0]:
+                log(run_stats.line(reply_count))
+                stat_dirty[0] = False
+
             time.sleep(interval + random.uniform(0, jitter))
 
+        if run_stats.judged:
+            log(run_stats.line(reply_count))          # 退出前留下最终成绩
         log("收到停止信号，关闭 ...")
         try:
             ctx.close()

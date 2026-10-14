@@ -12,8 +12,11 @@
   - is_noise(text)          -> 是否为可忽略的噪音
   - denoise(messages)       -> 过滤噪音消息
   - build_context(messages) -> 构造精简的上下文（省 token）
+  - feedback_verdict(text)  -> 「学习反馈」卡判对 / 判错 / 判不了
+  - feedback_key(text)      -> 反馈卡的稳定指纹（重复推送去重用）
 """
 
+import hashlib
 import re
 
 # ---------- 消息类型 ----------
@@ -133,6 +136,82 @@ def is_noise(text: str) -> bool:
     if classify(t) == TYPE_REMINDER:
         return True
     return False
+
+
+# ---------------- 学习反馈：判对 / 判错（用于"本次运行正确率"） ----------------
+# 反馈卡形如：
+#   学习反馈
+#   📚 正在学习：智能合约技术
+#   ✅ 答对了
+#   💡 回答正确！`bytes32` 是固定长度为 32 字节的定长字节数组……
+#   掌握度: 27%
+#   第 9 题          ← 其后是**夹带的下一题**，不属于本次判定
+#   在资料中，我们使用 `uint` 类型……
+#
+# 注意：判定语也可能直接写在 💡 那一行（"💡 回答正确！…"），
+# 所以不能遇到 💡 就停 —— 必须先把当前行匹配一遍。
+_FB_CORRECT = re.compile(r"(答对了|回答正确|答得正确|完全正确)")
+_FB_WRONG = re.compile(r"(答错了|回答错误|答案错误|回答有误|答得不对|不太正确)")
+# 「第 N 题」= 夹带的下一题开始；其后的内容不能参与本卡指纹
+_FB_NEXT_Q = re.compile(r"^第\s*(\d+)\s*题")
+# 判定区开头两行（卡片标题与课程名），无判定信息
+_FB_HEADER = re.compile(r"^(学习反馈|📚|正在学习)")
+
+
+def feedback_verdict(text: str):
+    """从「学习反馈」卡片里判定**上一题**答对 / 答错。
+
+    返回 True（答对）/ False（答错）/ None（认不出来）。
+    只认判定行，不拿解析正文猜 —— 解析里可能出现"这样答对了"之类的措辞。
+    """
+    if not text:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or _FB_HEADER.match(line):
+            continue
+        # 先判定当前行（💡 行本身可能就是判定句）
+        hit_c = _FB_CORRECT.search(line)
+        hit_w = _FB_WRONG.search(line)
+        if hit_c:
+            return True
+        if hit_w:
+            return False
+        # 只有符号、没写文字的判定行："✅" / "❌"
+        pure = line.lstrip("✅❌✔✕✗×√☑☒").strip()
+        if not pure:
+            if line[:1] == "✅":
+                return True
+            if line[:1] == "❌":
+                return False
+        # 走到这里说明本行只是标题/课程名/装饰；碰到"下一题"就收工
+        if _FB_NEXT_Q.match(line):
+            break
+    return None
+
+
+def feedback_key(text: str) -> str:
+    """反馈卡的稳定指纹 —— 机器人会把同一条反馈重复推送多次，
+    用内容指纹（而非消息 id）才能稳定去重。
+
+    取「判定区」（到夹带的下一题为止，含掌握度行）+ 下一题题号：
+      · 同一条反馈重复推送 → 文本一致 → 指纹一致 → 只计一次
+      · 不同题 → 判定/解析/题号至少一样不同 → 指纹不同
+    """
+    if not text:
+        return ""
+    parts, qnum = [], ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = _FB_NEXT_Q.match(line)
+        if m:
+            qnum = m.group(1)
+            break
+        parts.append(line)
+    core = "\n".join(parts[:14])
+    return hashlib.md5(f"{core}|q={qnum}".encode("utf-8")).hexdigest()[:16]
 
 
 def denoise(messages, drop_reminders=True, dedup=True):

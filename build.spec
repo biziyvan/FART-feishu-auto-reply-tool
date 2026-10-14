@@ -58,6 +58,11 @@ hiddenimports += ["tkinter", "tkinter.ttk", "tkinter.filedialog",
                   "tkinter.messagebox", "tkinter.scrolledtext"]
 
 # ---- 4. 本项目脚本：作为数据文件打进包，供 --run-sub 读取执行 ----
+# 只放**运行期真正会用到**的逻辑脚本（与 package_release.py 的 LOGIC_FILES 对应）。
+# test_* / diag_* 等开发与诊断脚本**不进发行包** —— 它们只存在于源码仓库，
+# 用 .venv 解释器直接运行即可（见 README「开发与打包 → 测试 / 诊断工具」）。
+# 历史遗留：test_send / test_background / test_occlusion / diag_dom / diag_page
+# 曾被误打进 _internal/，属面向最终用户的载荷冗余，v1.2.1 起移除。
 APP_SCRIPTS = [
     "runtime.py",
     "settings.py",
@@ -65,11 +70,6 @@ APP_SCRIPTS = [
     "step2_auto_reply.py",
     "fetch_history.py",
     "step1_check_login.py",
-    "test_send.py",
-    "test_background.py",
-    "test_occlusion.py",
-    "diag_dom.py",
-    "diag_page.py",
 ]
 for name in APP_SCRIPTS:
     p = os.path.join(ROOT, name)
