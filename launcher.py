@@ -569,7 +569,15 @@ class Theme:
         old = dict(self.c)
         self.mode = mode
         self.c = dict(PALETTE[mode])
-        mapping = {v.lower(): self.c[k] for k, v in old.items()
+        # ⚠️ 映射是**按颜色值**建的，而浅色下 surface 与 accent_ink 同为 #FFFFFF
+        #    —— 谁后写谁生效。若 accent_ink 后写，所有 `bg=surface` 的容器
+        #    （面板内工具条 / 配置行 / 滚动画布…）在深色下会被染成 accent_ink 的
+        #    #0B0C10，比卡片底色 #131519 更黑，出现一块块脏色。
+        #    accent_ink 只用于 Canvas 绘制（从不作为控件 bg/fg），所以让「文字色」
+        #    先写、「底色」后写，冲突时按底色还原。
+        _INK_ROLES = ("ink", "accent_ink", "ink_muted", "ink_subtle")
+        _items = sorted(old.items(), key=lambda kv: 0 if kv[0] in _INK_ROLES else 1)
+        mapping = {v.lower(): self.c[k] for k, v in _items
                    if k in self.c and self.c[k] != v}
         alive_roots = []
         for w in self._roots:
@@ -2080,8 +2088,37 @@ class MainWindow(tk.Tk):
         self._bind_text(self.st)
 
     def _build_tab_cfg(self):
-        self.tab_cfg = Panel(self.tab_host, pad=22, radius=14)
-        cb = self.tab_cfg.body
+        # ⚠️ 本页内容是**定高**的（5 行配置 + 分隔线 + 5 行检查 + 按钮 ≈ 490px），
+        # 而页签区在默认 1000x720 下只有 ~316px。若像以前那样直接把内容塞进
+        # Panel.body，会被 Panel._layout() 按可视高度钳住 → 底部几行被硬裁
+        # （实测溢出 172px，「浏览器登录态」只露半截）。
+        # 日志页靠内部 Text 自己滚动所以没暴露，配置页没有滚动能力就露馅了。
+        # 这里包一层可滚动视口：内容再高也不丢，滚动条按内容按需显隐。
+        self.tab_cfg = Panel(self.tab_host, pad=0, radius=14)
+        vp = self.tab_cfg.body
+
+        # 滚动条先 pack（与 _attach_text_scrollbar 的顺序一致），确保它先拿到
+        # 右侧那条空间，画布再 expand 吃掉剩下的。
+        self._cfg_cv = themed(tk.Canvas(vp, highlightthickness=0, bd=0,
+                                        yscrollincrement=px(22)), "surface")
+        self._cfg_sb = RScrollbar(vp)
+        self._cfg_sb.configure(command=self._cfg_cv.yview)
+        self._cfg_cv.configure(yscrollcommand=self._cfg_sb.set)
+        self._cfg_sb.pack(side="right", fill="y")
+        self._cfg_cv.pack(side="left", fill="both", expand=True)
+        self._cfg_sb_shown = True
+
+        self._cfg_holder = themed(tk.Frame(self._cfg_cv), "surface")
+        self._cfg_win = self._cfg_cv.create_window(0, 0, window=self._cfg_holder,
+                                                   anchor="nw")
+        self._cfg_holder.bind("<Configure>", lambda _e: self._cfg_sync())
+        self._cfg_cv.bind("<Configure>", lambda _e: self._cfg_sync())
+        for _w in (self._cfg_cv, self._cfg_holder):
+            _w.bind("<MouseWheel>", self._cfg_wheel)
+
+        # 内容本体：留出与原 Panel(pad=22) 一致的 22px 内边距
+        cb = themed(tk.Frame(self._cfg_holder), "surface")
+        cb.pack(fill="both", expand=True, padx=px(22), pady=px(20))
 
         themed(tk.Label(cb, text="当前配置", font=T.font_h2, anchor="w"),
                "surface", "ink").pack(anchor="w")
@@ -2120,6 +2157,36 @@ class MainWindow(tk.Tk):
         """鼠标滚轮 + 关闭编辑。"""
         widget.bind("<MouseWheel>", lambda e: (widget.yview_scroll(int(-e.delta / 120), "units"),
                                               "break")[1])
+
+    def _cfg_sync(self):
+        """同步「配置与检查」滚动视口：撑满宽度 + 按需显隐滚动条。
+
+        只在"该不该显示"发生变化时动 pack，避免 <Configure> 里反复重排。
+        """
+        try:
+            cv = self._cfg_cv
+            cv.itemconfigure(self._cfg_win, width=max(1, cv.winfo_width()))
+            cv.configure(scrollregion=cv.bbox("all"))
+            need = self._cfg_holder.winfo_reqheight()
+            show = need > cv.winfo_height() + 1
+            if show != self._cfg_sb_shown:
+                self._cfg_sb_shown = show
+                if show:
+                    # before= 保证仍排在画布之前（pack_forget 后再 pack 会跑到最后）
+                    self._cfg_sb.pack(side="right", fill="y", before=cv)
+                else:
+                    self._cfg_sb.pack_forget()
+                    cv.yview_moveto(0)
+        except Exception:
+            pass
+
+    def _cfg_wheel(self, event):
+        """鼠标滚轮滚动配置页。"""
+        try:
+            self._cfg_cv.yview_scroll(int(-event.delta / 120), "units")
+        except Exception:
+            pass
+        return "break"
 
     def _fit_panel(self, panel):
         """让卡片高度贴合内容（指标/描述换行后也能自动长高）。"""

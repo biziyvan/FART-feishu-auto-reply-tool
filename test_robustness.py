@@ -513,4 +513,6 @@ try:
 except Exception:
     pass
 
+# 说明：GUI 相关的检查（配置页布局 / 换肤配色）在 test_cfg_layout.py 里，
+# 不并进本脚本 —— 本脚本要保持"纯无头、快、可反复跑"。
 sys.exit(1 if FAIL else 0)
