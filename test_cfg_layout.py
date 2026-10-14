@@ -139,6 +139,32 @@ try:
         t = win._tabs[i]
         ok(f"页签 {i} {name} 有尺寸", t.winfo_width() > 100 and t.winfo_height() > 50,
            f"{t.winfo_width()}x{t.winfo_height()}")
+
+    print("\n[6] 数据目录行 + 配置搬运按钮（换电脑免重填的入口）")
+    win._switch_tab(2)
+    pump()
+    import runtime as R
+    txt = str(win.lbl_data_dir.cget("text"))
+    ok("数据目录行显示的是真实路径", str(R.DATA_DIR) in txt, txt)
+    ok("并标明了来源（对不上号时好自证）",
+       R.data_dir_source() in txt, txt)
+    ry = win.lbl_data_dir.winfo_rooty() - holder.winfo_rooty()
+    ok("数据目录行在滚动区内（不会被裁掉）",
+       ry + win.lbl_data_dir.winfo_height() <= reached,
+       f"y={ry} h={win.lbl_data_dir.winfo_height()} 区高={reached}")
+    ok("「更改数据目录」按钮已创建",
+       win.btn_chdir.winfo_reqwidth() > 40 and win.btn_chdir.winfo_reqheight() > 10,
+       f"{win.btn_chdir.winfo_reqwidth()}x{win.btn_chdir.winfo_reqheight()}")
+    ok("导出 / 导入配置方法可用",
+       callable(getattr(win, "export_config", None))
+       and callable(getattr(win, "import_config", None))
+       and callable(getattr(win, "change_data_dir", None)))
+    # ★ 这条是关键：按钮曾经被放在页面最底部 → 折叠线以下 → 用户看不到。
+    act = win.btn_chdir.master
+    act_bottom = act.winfo_rooty() - holder.winfo_rooty() + act.winfo_height()
+    ok("主要按钮在首屏可见（不用滚动就能点到）",
+       act_bottom <= cv.winfo_height() + 1,
+       f"按钮底 {act_bottom} > 视口 {cv.winfo_height()}")
 except Exception as e:
     import traceback
     traceback.print_exc()

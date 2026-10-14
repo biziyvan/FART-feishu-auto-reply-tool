@@ -117,10 +117,18 @@ def bump(cur: str, part: str) -> str:
     return f"{major}.{minor}.{patch}"
 
 
-def _clean_old(prefix: str, keep: Path, pattern: str = "*.zip") -> None:
-    """删掉同前缀的旧产物，避免目录里堆一堆。"""
+def _clean_old(prefix: str, keep, pattern: str = "*.zip") -> None:
+    """删掉同前缀的旧产物，避免目录里堆一堆。
+
+    keep 可以是单个路径，也可以是一组路径（同一版本可能同时产出
+    "普通版"和"预置配置版"两个包，两个都要留着）。
+    """
+    if isinstance(keep, (list, tuple, set)):
+        keeps = {Path(k).resolve() for k in keep}
+    else:
+        keeps = {Path(keep).resolve()}
     for p in ROOT.glob(f"{prefix}*{pattern[1:]}"):
-        if p.resolve() == keep.resolve():
+        if p.resolve() in keeps:
             continue
         try:
             p.unlink()
@@ -355,14 +363,24 @@ def build_onefile() -> bool:
 # ----------------------------------------------------------------------
 # 打包
 # ----------------------------------------------------------------------
-def _zip_dir(src: Path, out: Path, root_name: str) -> tuple:
+def _zip_dir(src: Path, out: Path, root_name: str, extra=(),
+             skip_names=()) -> tuple:
+    """把目录打成 zip。
+
+    extra      --- 额外塞进去的条目 [(压缩包内路径, 本地文件)]，
+                   用于「预置配置版」把 config.yaml 放进 exe 同级。
+    skip_names --- 按文件名排除（例如普通版绝不带上 config.yaml）。
+    """
     files = [p for p in sorted(src.rglob("*")) if p.is_file()]
     files = [p for p in files
-             if not any(part in SKIP_PARTS for part in p.relative_to(src).parts)]
+             if not any(part in SKIP_PARTS for part in p.relative_to(src).parts)
+             and p.name not in skip_names]
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zc:
         for p in files:
             zc.write(p, (Path(root_name) / p.relative_to(src)).as_posix())
-    return len(files), out.stat().st_size
+        for arcname, path in extra:
+            zc.write(path, arcname)
+    return len(files) + len(extra), out.stat().st_size
 
 
 def build_single(ver: str, validate: bool = True) -> Path:
@@ -389,13 +407,32 @@ def build_single(ver: str, validate: bool = True) -> Path:
     return out
 
 
-def build_green(ver: str, validate: bool = True) -> Path:
+def build_green(ver: str, validate: bool = True, preset: Path = None) -> Path:
+    """打包目录版。
+
+    preset 不为 None 时产出「预置配置版」：把这份 config.yaml 放到压缩包
+    里 exe 同级。新机器解压后首次运行会自动接管它（runtime._migrate_legacy），
+    于是连配置向导都不会弹 —— 这是"换电脑/给别人用不用重填"的零操作方案。
+    ⚠️ 该文件内含 API Key，只在确实需要的分发场景下用。
+    """
     if not DIST_DIR.is_dir() or not ONEDIR_EXE.exists():
         raise SystemExit(f"[ERR] 找不到目录版产物：{DIST_DIR}\n"
                          f"      请先运行：python package_release.py --build")
-    out = ROOT / f"{GREEN_BASE}-v{ver}.zip"
-    print(f"[目录版] {DIST_DIR.name}  ->  {out.name}")
-    n, size = _zip_dir(DIST_DIR, out, GREEN_ROOT)
+
+    if preset is not None:
+        out = ROOT / f"{GREEN_BASE}-v{ver}-预置配置.zip"
+        extra = [(f"{GREEN_ROOT}/config.yaml", preset)]
+        skip = ()
+        print(f"[目录版·预置配置] {DIST_DIR.name} + {preset.name}  ->  {out.name}")
+        print("  ! 包内含 API Key，请只发给需要使用的人")
+    else:
+        out = ROOT / f"{GREEN_BASE}-v{ver}.zip"
+        extra, skip = (), {"config.yaml"}
+        print(f"[目录版] {DIST_DIR.name}  ->  {out.name}")
+
+    normal = ROOT / f"{GREEN_BASE}-v{ver}.zip"
+    preset_out = ROOT / f"{GREEN_BASE}-v{ver}-预置配置.zip"
+    n, size = _zip_dir(DIST_DIR, out, GREEN_ROOT, extra=extra, skip_names=skip)
     md5 = hashlib.md5(out.read_bytes()).hexdigest()
     print(f"  {n} 个文件，{size/1024/1024:.1f} MB，md5 {md5}")
 
@@ -404,21 +441,30 @@ def build_green(ver: str, validate: bool = True) -> Path:
         names = z.namelist()
         tops = sorted(set(x.split("/")[0] for x in names))
         bad = [x for x in names
-               if x.endswith("/config.yaml") or ".browser_data" in x
+               if ".browser_data" in x
                or x.endswith("answered.json") or x.endswith("reply_stats.json")
                or "__pycache__" in x]
+        if preset is None:
+            bad += [x for x in names if x.endswith("/config.yaml")]
         has_exe = f"{GREEN_ROOT}/{GREEN_ROOT}.exe" in names
         has_internal = any(x.startswith(f"{GREEN_ROOT}/_internal/") for x in names)
+        has_cfg = f"{GREEN_ROOT}/config.yaml" in names
+        want_cfg = preset is not None
+        tail = (f"预置配置={'OK' if has_cfg else '✗'}" if want_cfg
+                else f"用户数据误入={'无' if not bad else bad}")
         print(f"  验收: 顶层={tops}  exe={'OK' if has_exe else '✗'}  "
-              f"_internal={'OK' if has_internal else '✗'}  用户数据误入={'无' if not bad else bad}")
+              f"_internal={'OK' if has_internal else '✗'}  {tail}")
         if tops != [GREEN_ROOT]:
             print(f"  ! 顶层目录名异常，应为 [{GREEN_ROOT}]")
         if bad:
             raise SystemExit("[ERR] 压缩包内混入了用户数据/缓存，已终止。")
+        if want_cfg and not has_cfg:
+            raise SystemExit("[ERR] 已指定 --with-config，但包里没有 config.yaml。")
         if not (has_exe and has_internal):
             raise SystemExit("[ERR] 压缩包结构不完整（缺 exe 或 _internal）。")
 
-    _clean_old(GREEN_BASE, out, pattern="*.zip")
+    # 同一版本的两个包（普通 / 预置配置）都要保住，否则会被互相清掉
+    _clean_old(GREEN_BASE, [out, normal, preset_out], pattern="*.zip")
     return out
 
 
@@ -484,6 +530,11 @@ def main() -> int:
     ap.add_argument("--logic-only", action="store_true", help="只产出逻辑更新包")
     ap.add_argument("--source-only", action="store_true", help="只打源码包")
     ap.add_argument("--no-validate", action="store_true", help="跳过验收")
+    ap.add_argument("--with-config", dest="with_config", nargs="?", const="config.yaml",
+                    default=None, metavar="PATH",
+                    help="额外产出「预置配置版」绿色包：把指定 config.yaml（默认项目根那份）"
+                         "放进包内 exe 同级，新机器解压即用、不再弹配置向导。"
+                         "⚠️ 包内含 API Key，注意分发范围")
     args = ap.parse_args()
 
     ver = read_version()
@@ -522,6 +573,14 @@ def main() -> int:
     if not args.source_only:
         made.append(build_green(ver, validate=validate))
         print()
+        if args.with_config:
+            preset = Path(args.with_config).expanduser()
+            if not preset.is_absolute():
+                preset = (ROOT / preset).resolve()
+            if not preset.is_file():
+                raise SystemExit(f"[ERR] 找不到要预置的配置：{preset}")
+            made.append(build_green(ver, validate=validate, preset=preset))
+            print()
         if args.single:
             made.append(build_single(ver, validate=validate))
             print()

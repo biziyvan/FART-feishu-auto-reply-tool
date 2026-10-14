@@ -2134,6 +2134,42 @@ class MainWindow(tk.Tk):
             v.pack(side="left", fill="x", expand=True)
             self.cfg_rows[key] = v
 
+        # 数据目录：与"解压到哪"无关，重新解压/换版本都不该重填，
+        # 但用户经常搞不清配置到底存哪 —— 这里直接摊开给他看。
+        drow = tk.Frame(cb, bg=T.surface)
+        drow.pack(fill="x", pady=(px(7), px(0)))
+        themed(tk.Label(drow, text="数据目录", font=T.font_small, width=9, anchor="w"),
+               "surface", "ink_muted").pack(side="left")
+        self.lbl_data_dir = themed(
+            tk.Label(drow, text="—", font=T.font_mono_sm, anchor="w"),
+            "surface", "ink")
+        self.lbl_data_dir.pack(side="left", fill="x", expand=True)
+
+        # 操作按钮紧跟"当前配置"：这是用户最常来的地方。
+        # ⚠️ 别再把它们放页面最底部 —— 1000x720 下会被挤到折叠线以下，
+        #    用户根本看不见（v1.1.1 报的"按钮看不到"就是这个原因）。
+        #    "重新检查"归属"运行前检查"，所以留在下面。
+        act = tk.Frame(cb, bg=T.surface)
+        act.pack(fill="x", pady=(px(16), px(0)))
+        RButton(act, text="修改配置", icon="⚙", height=34,
+                command=self.edit_config).pack(side="left")
+        self.btn_chdir = RButton(act, text="更改数据目录", icon="📂", variant="ghost",
+                                 height=34, font=T.font_small,
+                                 command=self.change_data_dir)
+        self.btn_chdir.pack(side="left", padx=(px(8), px(0)))
+        RButton(act, text="导出配置", icon="💾", variant="ghost", height=34,
+                font=T.font_small,
+                command=self.export_config).pack(side="left", padx=(px(8), px(0)))
+        RButton(act, text="导入配置", icon="📥", variant="ghost", height=34,
+                font=T.font_small,
+                command=self.import_config).pack(side="left", padx=(px(8), px(0)))
+
+        themed(tk.Label(cb, text="换电脑 / 给别人用：点「导出配置」拿到一个约 3KB 的 "
+                                 "config.yaml，放到新机器解压目录（exe 旁边）即可自动生效，不用重填。",
+                        font=T.font_tiny, anchor="w", justify="left",
+                        wraplength=px(820)),
+               "surface", "ink_subtle").pack(anchor="w", pady=(px(10), px(0)))
+
         tk.Frame(cb, bg=T.hairline, height=px(1)).pack(fill="x", pady=(px(16), px(14)))
 
         themed(tk.Label(cb, text="运行前检查", font=T.font_h2, anchor="w"),
@@ -2146,12 +2182,10 @@ class MainWindow(tk.Tk):
             row.pack(fill="x", pady=(px(8), px(0)))
             self.health[key] = row
 
-        act = tk.Frame(cb, bg=T.surface)
-        act.pack(fill="x", pady=(px(18), px(0)))
-        RButton(act, text="修改配置", icon="⚙", height=34,
-                command=self.edit_config).pack(side="left")
-        RButton(act, text="重新检查", icon="↻", variant="ghost", height=34,
-                font=T.font_small, command=self._load_summary).pack(side="left", padx=(px(8), px(0)))
+        act2 = tk.Frame(cb, bg=T.surface)
+        act2.pack(fill="x", pady=(px(18), px(0)))
+        RButton(act2, text="重新检查", icon="↻", variant="ghost", height=34,
+                font=T.font_small, command=self._load_summary).pack(side="left")
 
     def _bind_text(self, widget):
         """鼠标滚轮 + 关闭编辑。"""
@@ -2454,6 +2488,14 @@ class MainWindow(tk.Tk):
         version = runtime.logic_version_note()
         try:
             self.lbl_ver.configure(text=f"{APP_TITLE} · 逻辑 v{version}")
+        except Exception:
+            pass
+
+        # 数据目录：与"解压到哪"无关（默认在用户目录），重新解压/换版本都不该重填。
+        try:
+            src = runtime.data_dir_source()
+            self.lbl_data_dir.configure(
+                text=f"{DATA_DIR}    · {src}" if src else str(DATA_DIR))
         except Exception:
             pass
 
@@ -2783,6 +2825,153 @@ class MainWindow(tk.Tk):
             except Exception as e:
                 # 兜底分支本身也会失败 → 必须给提示，否则用户"点了没反应"
                 toast(self, f"无法打开数据目录：{str(e)[:40]}", "err", ms=4200)
+
+    # ---------- 数据目录 / 配置搬运 ----------
+    def change_data_dir(self):
+        """把数据目录固定到用户指定的位置（写指针 + 迁移现有数据）。
+
+        默认在 %LOCALAPPDATA%\\飞书自动回复助手，与解压位置无关 —— 正常
+        重新解压/换版本都不需要重填。但下面两种情况默认位置不适用：
+          · 同一台电脑换了 Windows 账号（每个账号的用户目录是独立的）
+          · 想固定放到 C:\\某目录 / D 盘，方便备份和查看
+        改完写进指针文件，之后**所有版本**都读这个位置，与解压位置无关。
+        """
+        if self.proc is not None and self.proc.poll() is None:
+            messagebox.showwarning(
+                "监控运行中",
+                "监控正在运行（进程 %s）。\n\n请先点「停止」，再更改数据目录。"
+                % self.proc.pid, parent=self)
+            return
+        cur = str(DATA_DIR)
+        new = filedialog.askdirectory(parent=self, title="选择新的数据目录",
+                                      initialdir=cur, mustexist=False)
+        if not new:
+            return
+        try:
+            if os.path.abspath(new) == os.path.abspath(cur):
+                toast(self, "与当前数据目录相同，无需更改", "info")
+                return
+        except Exception:
+            pass
+        if not messagebox.askyesno(
+                "更改数据目录",
+                f"当前数据目录：\n{cur}\n\n将全部搬到：\n{new}\n\n"
+                "之后所有版本都会读取新位置（与解压位置无关），"
+                "搬完需要重启程序。\n\n继续吗？", parent=self):
+            return
+
+        self.btn_chdir.configure(state="disabled")
+        toast(self, "正在迁移数据目录…", "info", ms=12000)
+
+        # ⚠️ 迁移可能牵扯几百 MB 的浏览器登录态，必须放到后台线程；
+        #    而 Tk 控件只能在主线程碰 —— 用 Queue 把结果传回来（同 project 的
+        #    日志处理也是这个套路）。
+        box = queue.Queue()
+
+        def work():
+            try:
+                box.put(runtime.set_data_dir(new))
+            except Exception as e:            # 线程里绝不能抛出去
+                box.put((False, f"迁移失败：{e}"))
+
+        def poll():
+            try:
+                ok, msg = box.get_nowait()
+            except queue.Empty:
+                self.after(120, poll)
+                return
+            self._after_change_dir(ok, msg)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(120, poll)
+
+    def _after_change_dir(self, ok, msg):
+        try:
+            self.btn_chdir.configure(state="normal")
+        except Exception:
+            pass
+        if ok:
+            self._load_summary()
+            messagebox.showinfo(
+                "已切换",
+                f"{msg}\n\n请关闭本程序再重新打开，以使用新目录。", parent=self)
+        else:
+            messagebox.showerror("切换失败", msg, parent=self)
+
+    def export_config(self):
+        """导出当前配置为一份 config.yaml（约 3KB），拿给别的机器用。"""
+        if not CONFIG_FILE.exists():
+            messagebox.showwarning("尚未配置",
+                                   "还没有 config.yaml 可导出，请先点「修改配置」。",
+                                   parent=self)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self, title="导出配置（换电脑 / 给别人用）",
+            defaultextension=".yaml", initialfile="config.yaml",
+            filetypes=[("配置文件", "*.yaml *.yml"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            shutil.copy2(CONFIG_FILE, path)
+        except Exception as e:
+            messagebox.showerror("导出失败", str(e), parent=self)
+            return
+        self._log(f"配置已导出：{path}")
+        messagebox.showinfo(
+            "导出完成",
+            f"已导出到：\n{path}\n\n"
+            "【新机器怎么用】两种任选：\n"
+            "① 把这份 config.yaml 放到新机器的**解压目录**（和 exe 同一层），\n"
+            "   双击 exe 会自动接管，连向导都不弹；\n"
+            "② 或者在新机器上点「导入配置」，选这个文件。\n\n"
+            "⚠️ 文件里含 API Key，请勿上传或转发给无关的人。", parent=self)
+        toast(self, "配置已导出", "ok")
+
+    def import_config(self):
+        """从一份 config.yaml 导入配置（原子写入数据目录）。"""
+        if self.proc is not None and self.proc.poll() is None:
+            messagebox.showwarning("监控运行中", "请先点「停止」，再导入配置。",
+                                   parent=self)
+            return
+        path = filedialog.askopenfilename(
+            parent=self, title="选择配置文件（config.yaml）",
+            filetypes=[("配置文件", "*.yaml *.yml"), ("所有文件", "*.*")])
+        if not path:
+            return
+        src = Path(path)
+        try:
+            data = yaml.safe_load(src.read_text(encoding="utf-8", errors="replace"))
+        except Exception as e:
+            messagebox.showerror("导入失败", f"不是有效的 YAML 文件：\n{e}", parent=self)
+            return
+        # 校验一下是不是本程序的配置：放宽到"有 feishu 或 llm 段"，
+        # 避免用户随手选了个别的 yaml 把配置写坏。
+        if not isinstance(data, dict) or not ({"feishu", "llm"} & set(data)):
+            messagebox.showerror(
+                "导入失败",
+                "这个文件看起来不是本程序的配置（缺少 feishu / llm 段）。",
+                parent=self)
+            return
+        if CONFIG_FILE.exists() and not messagebox.askyesno(
+                "覆盖现有配置？",
+                f"当前已有配置：\n{CONFIG_FILE}\n\n"
+                "导入会覆盖它（原文件会自动备份为 config.yaml.bak）。继续吗？",
+                parent=self):
+            return
+        try:
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            if CONFIG_FILE.exists():
+                shutil.copy2(CONFIG_FILE,
+                             CONFIG_FILE.with_name(CONFIG_FILE.name + ".bak"))
+            tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
+            tmp.write_bytes(src.read_bytes())
+            os.replace(tmp, CONFIG_FILE)
+        except Exception as e:
+            messagebox.showerror("导入失败", f"写入配置失败：\n{e}", parent=self)
+            return
+        self._log(f"配置已导入：{src}")
+        self._load_summary()
+        toast(self, "配置已导入，重启监控后生效", "ok", ms=4200)
 
     def import_update(self):
         """导入「逻辑更新包」(.zip)：不换 exe 也能更新逻辑（增量更新）。"""

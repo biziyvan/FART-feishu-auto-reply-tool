@@ -16,8 +16,14 @@
 数据目录优先级（frozen 模式）：
   1. 环境变量 FEISHU_DATA_DIR（用户显式指定，便于多实例/自定义位置）
   2. exe 同级存在 portable.txt → 便携模式，数据随 exe 走（绿色版）
-  3. 用户数据目录 %LOCALAPPDATA%\\飞书自动回复助手（默认，推荐）
+  3. 界面里"更改数据目录"选过的位置（指针文件记在默认目录里，见下）
+  4. 用户数据目录 %LOCALAPPDATA%\\飞书自动回复助手（默认，推荐）
      └ 这样 exe 放桌面、放 U 盘、被覆盖升级，配置与登录态都不丢
+
+  ★ 自定义位置靠一个**指针文件**记住：
+      %LOCALAPPDATA%\\飞书自动回复助手\\location.txt   ← 内容=真正的数据目录
+    指针必须待在"默认目录"里 —— 它自己要是跟着数据走，一旦新位置不可用
+    （U 盘拔了 / 网络盘断了）就再也找不到数据在哪了。指针失效 → 自动退回默认。
 
   ★ 兼容旧版本：老版本把数据写在 exe 同级目录，首次运行时自动迁移。
 
@@ -52,6 +58,11 @@ _LEGACY_MIGRATE = (
     "reply_stats.json",
 )
 
+# 自定义数据目录的"指针文件"名。放在**默认用户目录**里，内容就是真正的数据目录。
+# 之所以不放在数据目录自己里：数据目录要是当前不可用（U 盘/网络盘），
+# 指针也跟着一起找不到，就永远回不去了。
+_LOCATION_FILE = "location.txt"
+
 
 def _resolve_app_dir():
     """代码 / 只读资源所在目录。"""
@@ -76,6 +87,117 @@ def _user_data_dir():
         return Path(base) / APP_NAME
     # 非 Windows 兜底
     return Path.home() / f".{APP_NAME}"
+
+
+def default_data_dir():
+    """默认数据目录（%LOCALAPPDATA%\\飞书自动回复助手）。"""
+    return _user_data_dir()
+
+
+def location_file():
+    """数据目录指针文件路径（始终在默认用户目录下）。"""
+    return _user_data_dir() / _LOCATION_FILE
+
+
+def custom_data_dir(create=False):
+    """读取指针文件里的自定义数据目录；没有 / 无效时返回 None。
+
+    无效的情况（都安全退回默认目录，不影响程序启动）：
+      · 指针文件不存在或内容为空
+      · 内容不是绝对路径（手改坏了）
+      · 目标目录不存在且 create=False
+    """
+    try:
+        f = location_file()
+        if not f.is_file():
+            return None
+        raw = f.read_text(encoding="utf-8", errors="replace").strip().strip('"')
+        if not raw:
+            return None
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            return None
+        if create and not p.is_dir():
+            p.mkdir(parents=True, exist_ok=True)
+        return p if p.is_dir() else None
+    except Exception:
+        return None
+
+
+def set_data_dir(new_dir):
+    """把数据目录切换到一个固定位置：迁移现有数据 + 记住指针。
+
+    返回 (是否成功, 说明文字)。仅打包模式有意义（源码模式数据就在项目根）。
+
+    迁移用 shutil.move：同盘是**瞬时重命名**（不复制），所以几百 MB 的
+    浏览器登录态也是秒完；跨盘才会真的拷，慢但由用户主动触发、可接受。
+    目标目录里已存在的同名项**保留目标的那份**，不覆盖。
+    """
+    try:
+        new = Path(new_dir).expanduser()
+        if not new.is_absolute():
+            return False, "请选择一个绝对路径。"
+        old = DATA_DIR
+        # 以"当前实际生效的位置"为准：DATA_DIR 是进程启动时算好的，
+        # 用户在同一会话里改过一次后它就过期了，此时应以指针指向的为准，
+        # 否则再点同一个目录会被当成"又一次迁移"。
+        eff = custom_data_dir() or old
+        try:
+            if new.resolve() in (old.resolve(), eff.resolve()):
+                return False, "与当前数据目录相同，无需更改。"
+        except Exception:
+            pass
+        new.mkdir(parents=True, exist_ok=True)
+
+        moved, kept, failed = 0, 0, []
+        items = sorted(old.iterdir()) if old.is_dir() else []
+        for item in items:
+            dst = new / item.name
+            if dst.exists():
+                kept += 1
+                continue
+            try:
+                shutil.move(str(item), str(dst))
+                moved += 1
+            except Exception:
+                failed.append(item.name)
+
+        # 指针：写在**默认目录**里，与数据目录本身解耦（见文件头说明）
+        try:
+            loc = location_file()
+            loc.parent.mkdir(parents=True, exist_ok=True)
+            tmp = loc.with_name(loc.name + ".tmp")
+            tmp.write_text(str(new), encoding="utf-8")
+            os.replace(tmp, loc)
+        except Exception as e:
+            return False, (f"数据已搬到新位置，但没能记住它（{e}）。\n"
+                           f"下次启动会回到原来的目录，请重试或手动设置环境变量 "
+                           f"FEISHU_DATA_DIR。")
+
+        msg = f"数据目录已切换到：\n{new}"
+        if moved:
+            msg += f"\n\n已迁移 {moved} 项"
+        if kept:
+            msg += f"\n{kept} 项在新目录里已存在，保留新目录那份"
+        if failed:
+            msg += f"\n{len(failed)} 项迁移失败：{'、'.join(failed[:3])}"
+        return True, msg
+    except Exception as e:
+        return False, f"切换数据目录失败：{e}"
+
+
+def reset_data_dir():
+    """取消自定义数据目录，回到默认用户目录。返回 (是否成功, 说明)。
+
+    只删指针、**不搬数据** —— 默认目录里原有的数据还在原地，直接生效。
+    """
+    try:
+        loc = location_file()
+        if loc.exists():
+            loc.unlink()
+        return True, f"已恢复默认数据目录：\n{default_data_dir()}"
+    except Exception as e:
+        return False, f"恢复默认失败：{e}"
 
 
 def _migrate_legacy(old_dir, new_dir):
@@ -114,20 +236,31 @@ def _resolve_data_dir():
     优先级：
       1. 环境变量 FEISHU_DATA_DIR（用户显式指定）
       2. frozen + portable.txt → exe 同级（便携/绿色模式）
-      3. frozen → %LOCALAPPDATA%\\飞书自动回复助手（默认）
-      4. 源码 → 项目根目录
+      3. frozen + 指针文件 → 用户选过的固定位置
+      4. frozen → %LOCALAPPDATA%\\飞书自动回复助手（默认）
+      5. 源码 → 项目根目录
     """
     env = os.environ.get("FEISHU_DATA_DIR")
     if env:
-        p = Path(env).expanduser()
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        try:
+            p = Path(env).expanduser()
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception:
+            # 环境变量给了个不可用路径 → 别直接崩，继续按后面的规则找
+            pass
 
     if getattr(sys, "frozen", False):
         exe_dir = _exe_dir()
         # 便携模式：exe 同级放一个 portable.txt 即可让数据随 exe 走
         if (exe_dir / "portable.txt").exists():
             return exe_dir
+
+        # 用户"更改数据目录"选过的位置（指针无效时返回 None → 顺势退回默认）
+        cust = custom_data_dir(create=True)
+        if cust is not None:
+            _migrate_legacy(exe_dir, cust)
+            return cust
 
         target = _user_data_dir()
         try:
@@ -143,6 +276,19 @@ def _resolve_data_dir():
 APP_DIR = _resolve_app_dir()
 DATA_DIR = _resolve_data_dir()
 IS_FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def data_dir_source():
+    """给界面看的"当前数据目录是按哪条规则定的"，便于用户对不上号时自证。"""
+    if os.environ.get("FEISHU_DATA_DIR"):
+        return "环境变量 FEISHU_DATA_DIR"
+    if not IS_FROZEN:
+        return "源码目录"
+    if (_exe_dir() / "portable.txt").exists():
+        return "便携模式（随 exe 文件夹）"
+    if custom_data_dir():
+        return "自定义位置"
+    return "用户目录（默认）"
 
 
 # ============================================================
