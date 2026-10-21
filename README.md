@@ -1,389 +1,326 @@
-# 飞书 AI 教学平台 · 自动回复
+# Feishu AI Tutor Auto-Responder
 
-自动监控「AI教学平台」机器人的提问 → 调用大模型生成答案 → 自动发送回复。
+**A Windows desktop assistant that watches a Feishu/Lark tutoring chatbot, answers each question with an LLM, and verifies that the answer was actually delivered — built for the messy reality of a virtual-scrolling chat UI.**
 
-**技术路线**：Playwright + Edge 浏览器自动化（有头模式，复用登录态）
-**外壳**：纯 Tkinter 桌面控制台（零额外依赖），打包为免安装绿色版
+[![Release](https://img.shields.io/badge/release-v1.4.0-2ea44f?style=flat-square)](https://github.com/biziyvan/FRT-feishu-reply-tool-/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.8%2B-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![Playwright](https://img.shields.io/badge/Playwright-CDP%20%2B%20Edge-2ead33?style=flat-square&logo=playwright&logoColor=white)](https://playwright.dev)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
----
-
-## 一、两种用法
-
-### 方式一：绿色版（普通用户，推荐）
-
-拿到 `飞书自动回复助手-绿色版-vX.Y.Z.zip` 后：
-
-1. 解压到任意文件夹（桌面、D 盘都行）
-2. 双击里面的 `飞书自动回复助手.exe`
-3. 首次运行填 3 项：飞书网页版地址、机器人会话名、大模型 API Key
-4. 点「启动监控」，首次用手机飞书扫码登录一次
-
-> 图文详解见随包的 `使用说明.txt`。
-> **配置与解压位置无关**：数据存在用户目录，换解压位置、升级新版本都不会丢（见第八节）。
-
-### 方式二：源码运行（开发者）
-
-```bash
-# 1. 准备环境
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install playwright pyyaml requests -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 2. 准备配置
-copy config.example.yaml config.yaml    # 然后填入自己的地址与 API Key
-
-# 3. 启动图形界面
-.venv\Scripts\python.exe launcher.py
-
-# 或者直接跑命令行版主程序
-.venv\Scripts\python.exe step2_auto_reply.py --max-replies 10
-```
-
-`step2_auto_reply.py` 常用参数：
-
-```bash
-.venv\Scripts\python.exe step2_auto_reply.py                  # 一直运行（默认）
-.venv\Scripts\python.exe step2_auto_reply.py --max-replies 10  # 答满 10 题后停止
-.venv\Scripts\python.exe step2_auto_reply.py --dry-run -n 5    # 干跑，不真发
-```
+**English** · [简体中文](README.zh-CN.md)
 
 ---
 
-## 二、环境说明
+## Table of Contents
 
-| 项 | 说明 |
-|---|---|
-| Python | 3.8+（3.13 已验证） |
-| 依赖 | `playwright` / `pyyaml` / `requests`（仅这三个） |
-| 浏览器 | **Microsoft Edge**（`channel: msedge`，Win10/11 自带；也可改 `chrome`） |
-| 登录态 | 登录一次长期复用，默认存在数据目录的 `.browser_data` |
-| 界面 | Tkinter（Python 自带，无需安装） |
-
-> 绿色版已把 Python、依赖、界面全部打包进 `_internal/`，用户无需任何环境。
-
----
-
-## 三、配置说明（config.yaml）
-
-配置示例见 `config.example.yaml`。常用项：
-
-| 配置项 | 说明 |
-|---|---|
-| `feishu.base_url` | 飞书网页版地址（从浏览器地址栏复制） |
-| `feishu.target_chat_name` | 目标会话名，默认「AI教学平台」 |
-| `browser.channel` | `msedge`（Edge）/ `chrome`（Chrome） |
-| `browser.headless` | **必须 false**，飞书对无头浏览器风控严格 |
-| `browser.keep_front` | 是否周期性把浏览器窗口提到前台，默认 `false`（**不抢焦点**）。设为 `true` 可略降页面冻结概率，但会每隔几秒打断你正在做的事 |
-| `polling.interval` / `jitter` | 轮询间隔（秒）与随机抖动，降低风控概率 |
-| `context.context_size` | 上下文消息条数上限，默认 30 |
-| `context.max_chars` | 上下文最大字符数，默认 3000（**控制 token 开支**） |
-| `context.pool_max` | 内存消息池上限，默认 1200（长时间运行自动裁剪） |
-| `reply_strategy.latest_only` | **只答最新一题**（默认 true），不补答历史旧题 |
-| `reply_strategy.auto_reply_course` | 「请输入课程名」提示时自动回应的课程名；留空 `""` 则关闭 |
-| `llm.provider` | 接口类型，默认 `"auto"`（按 `base_url` 自动识别，通常不用动） |
-| `llm.base_url` | 接口地址（硅基流动 / DeepSeek / 任意 OpenAI 兼容网关） |
-| `llm.model` | 模型名，默认 `Qwen/Qwen3.5-35B-A3B` |
-| `llm.thinking` | 思考模式 `"enabled"` / `"disabled"`，留空则按接口自适应 |
-| `llm.system_prompt` | 系统提示词（**准确率关键**） |
-| `reply.send_delay_min/max` | 发送前随机延迟（秒），模拟真人 |
-
-### 大模型接口自适应
-
-**换厂商只需改 `base_url` 和 `model` 两行**，参数形式由程序自动判别：
-
-| 接口 | 关闭思考的写法 | 备注 |
-|---|---|---|
-| 硅基流动 | `{"enable_thinking": false}` | 默认关思考 |
-| DeepSeek | `{"thinking": {"type": "disabled"}}` | **官方默认开启思考**，程序会自动补上关闭参数；开启思考时 `temperature` 会静默失效 |
-
-判定优先级：`base_url` 主机名 > 显式 `provider` > 模型名 > 通用。
-填错了也不影响运行——以地址识别的结果为准，程序会在启动日志里提示改回 `"auto"`。
+- [Why this project exists](#why-this-project-exists)
+- [What makes it non-trivial](#what-makes-it-non-trivial)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Request lifecycle](#request-lifecycle)
+- [Screenshots](#screenshots)
+- [Demo: one full answer cycle](#demo-one-full-answer-cycle)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Engineering notes: three bugs that shaped the design](#engineering-notes-three-bugs-that-shaped-the-design)
+- [Reliability & testing](#reliability--testing)
+- [Tech stack](#tech-stack)
+- [Data & privacy](#data--privacy)
+- [License](#license)
 
 ---
 
-## 四、文件说明
+## Why this project exists
+
+Many online course platforms in China deliver quizzes through a Feishu (Lark) chatbot:
+the bot pushes a question card, the learner replies with an answer, and the bot responds
+with a feedback card containing the verdict and an explanation — then pushes the next question.
+
+Answering this by hand is pure mechanical repetition. Automating it *looks* trivial
+("just read the DOM and type a letter"), but the chat client turns out to be actively
+hostile to automation:
+
+- the message list uses **virtual scrolling** — only 37–64 nodes exist in the DOM at any time;
+- the bot **re-pushes the same question** several times, sometimes 50% of all messages are duplicates;
+- the same question can arrive in **three different card layouts**, one of which has no question number at all;
+- the input box is **Lark's rich-text editor**, which keeps stale DOM nodes after sending;
+- when the window is occluded or unfocused, Chromium **throttles timers and freezes rendering**.
+
+This project is the result of taking those constraints seriously: a small, deliberately
+engineered desktop tool rather than a fragile macro.
+
+## What makes it non-trivial
+
+| Constraint | Naive approach | Why it fails | What this project does |
+|---|---|---|---|
+| Virtual scrolling | Scrape all messages once | Only ~50 of 1000+ messages are in the DOM | Incremental accumulation keyed by message ID while scrolling |
+| DOM order | Read top-to-bottom | DOM order ≠ chronological order | Restore real order from **Snowflake IDs** (embedded timestamps) |
+| Duplicate pushes | Compare message prefixes | Same question number + same template ⇒ false match | Holistic containment only; explicit "same question" fingerprint |
+| Rich-text input | Check if the box is empty | Stale nodes ⇒ thinks it failed ⇒ **sends twice** | Clear → insertText → **verify box content == intended answer** |
+| Send confirmation | Count my messages +1 | Virtual scrolling ⇒ count may not change | Confirm by **message ID change**, not by count |
+| Occluded window | `bringToFront()` every loop | Steals user focus every 5 seconds | CDP flags + `visibilityState` spoofing; **no focus stealing** |
+| Cold start | Re-read everything | Slow, rate-limited | Read only the visible viewport; skip backlogged questions |
+
+## Features
+
+- **Automatic answering** — polls the chat, extracts the current question, calls an
+  OpenAI-compatible LLM, sends the answer, and verifies delivery.
+- **Correctness tracking** — parses the bot's feedback cards (`✅ correct` / `❌ wrong`) and
+  shows a live per-run accuracy rate. Duplicate feedback is de-duplicated by content
+  fingerprint; historical feedback present at startup is never counted.
+- **Answer-type awareness** — multiple choice → a single letter; true/false → lowercase
+  `true`/`false`; short answer → one or two sentences; code → minimal snippet with **no
+  Markdown fences** (the platform grades fenced code as "material", not as an answer).
+- **Provider auto-adaptation** — switching vendors means editing two lines
+  (`base_url` + `model`). Thinking-mode parameters are derived automatically
+  (SiliconFlow uses `enable_thinking`, DeepSeek uses `thinking: {type: disabled}`).
+- **Engine / logic separation** — the UI shell is frozen into the `.exe`; the reply logic
+  ships as ~44 KB hot-swappable scripts, so behaviour can be patched without a reinstall.
+- **Portable configuration** — data lives in `%LOCALAPPDATA%`, decoupled from the unzip
+  location; a pointer file relocates it, and `portable.txt` enables a fully portable mode.
+- **Zero-dependency UI** — the entire interface is hand-drawn on Tkinter canvases
+  (no Qt, no web view), with light/dark themes and DPI awareness.
+- **Crash visibility** — atomic JSON writes with `.bak` fallback, send-failure circuit
+  breaker, `sys.excepthook` **and** `threading.excepthook` persisted to disk (a windowed
+  app has no console, so unhandled exceptions would otherwise vanish).
+
+## Architecture
+
+![Architecture](docs/architecture.png)
+
+> Vector source: [`docs/architecture.svg`](docs/architecture.svg) — suitable for slides or application materials.
+
+**Design intent.** The console never talks to the browser directly. It launches the reply
+engine as a child process and reads a structured log stream — this keeps the UI responsive,
+makes the engine runnable headless (CLI mode), and allows the engine to be replaced at
+runtime without touching the frozen executable.
+
+## Request lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant F as Feishu Web
+    participant E as Reply Engine
+    participant D as denoise
+    participant M as LLM API
+    participant U as Console
+
+    loop every 5 s (+ jitter)
+        E->>F: query visible message nodes
+        F-->>E: 37–64 nodes
+        E->>E: merge into pool, order by Snowflake ID
+        E->>D: strip UI noise, drop reminders, dedup by fingerprint
+        D-->>E: current question (must include A/B/C/D options)
+        alt no new question
+            E-->>U: [待命] waiting for the next question
+        else new question
+            E->>M: single-message prompt (thinking disabled)
+            M-->>E: answer
+            E->>F: clear → insertText → verify content == expected
+            E->>F: press Enter
+            E->>F: confirm by message ID changed
+            E-->>U: answer + ✓ delivered
+        end
+    end
+    F-->>E: feedback card (correct / wrong)
+    E->>E: parse verdict, dedup by content fingerprint
+    E-->>U: live accuracy rate
+```
+
+## Screenshots
+
+> Demonstration data only — tenant URL, API key and paths are redacted.
+
+**Dashboard** — status card with per-run accuracy, poll counter and uptime:
+
+![Dashboard](docs/screenshot-dashboard.png)
+
+**Answer stream** — one line per answered question, showing what was sent and whether it
+was delivered:
+
+![Answer stream](docs/screenshot-answer-stream.png)
+
+**Configuration** — the console surfaces exactly where config and data live:
+
+![Configuration](docs/screenshot-config.png)
+
+**Pre-flight checks** — config file, model key, browser session, history context and
+logic version are verified before starting:
+
+![Pre-flight checks](docs/screenshot-checks.png)
+
+## Demo: one full answer cycle
+
+1. **Start monitoring.** The engine launches Edge in headed mode, reusing the saved
+   browser profile, and enters the target chat.
+2. **The bot pushes a question.** The engine takes a viewport snapshot, orders messages by
+   Snowflake ID, removes noise and duplicates, and extracts the question text *including
+   its options*.
+3. **The question goes to the model.** A single-message prompt (no multi-turn history, which
+   previously caused the model to answer the *previous* question) with thinking mode
+   explicitly disabled.
+4. **The answer is typed and verified.** The input is cleared, the answer is inserted through
+   CDP, and the box content is compared against the intended string. If they differ, the
+   attempt is abandoned rather than risk sending a corrupted answer.
+5. **Delivery is confirmed** by observing a change in message IDs — not by counting messages,
+   which is unreliable under virtual scrolling.
+6. **Feedback arrives.** The bot's verdict is parsed, de-duplicated, and folded into the
+   per-run accuracy metric.
+
+Terminal output for the same cycle:
 
 ```
-飞书自动回复/
-├── launcher.py            ← 图形界面 + 进程管理（引擎，编入 exe）
-├── runtime.py             ← 运行时路径/数据目录解析（引擎，编入 exe）
-├── settings.py            ← 配置读取与大模型接口自适应（逻辑脚本）
-├── denoise.py             ← 去噪/选题预处理模块（逻辑脚本，核心）
-├── step2_auto_reply.py    ← 自动回复主程序（逻辑脚本）
-├── fetch_history.py       ← 抓取历史对话（逻辑脚本）
-├── step1_check_login.py   ← 环境验证（逻辑脚本）
-├── config.yaml            ← 你的配置（含 API Key，勿外传）
-├── config.example.yaml    ← 配置模板
-├── build.spec             ← PyInstaller 打包描述
-├── package_release.py     ← 一键打包脚本
-├── sync_prompt.py         ← 把根目录 config.yaml 的提示词同步进 launcher
-├── VERSION / CHANGELOG.md ← 版本号与逐版记录
-└── test_*.py / diag_*.py  ← 自检与诊断脚本（详见第九节）
-```
-
-**运行期数据不在项目目录**，而在数据目录（默认 `%LOCALAPPDATA%\飞书自动回复助手`）：
-
-```
-config.yaml          ← 配置      .browser_data\  ← 浏览器登录态（勿删）
-live.log             ← 实时日志   auto_reply.log  ← 历史日志
-answered.json        ← 已答记录   reply_stats.json← 问答统计
-history.json         ← 历史上下文 answered.json.bak← 自动备份
-app\                 ← 逻辑更新目录（导入更新包后出现）
-```
-
-> `app\` 里若存在与程序同名的 `.py`，会**优先于** exe 内置的那份被使用——这就是「不换 exe 也能修逻辑」的原理。
-
-### 数据目录的优先级
-
-程序按以下顺序确定数据目录，**任一步失效都会安全退回默认目录**（不会因配置错误起不来）：
-
-| 顺序 | 来源 | 用途 |
-|---|---|---|
-| 1 | 环境变量 `FEISHU_DATA_DIR` | 多实例 / 临时指定 |
-| 2 | exe 同级 `portable.txt` | 便携模式（数据随文件夹走） |
-| 3 | 指针 `location.txt`（存在**默认用户目录**里） | 界面「更改数据目录」后写入 |
-| 4 | `%LOCALAPPDATA%\飞书自动回复助手` | **默认**，与解压位置无关 |
-
----
-
-## 五、核心机制
-
-### 1. 不反复滚动
-
-飞书消息列表是**虚拟滚动**，DOM 里只保留几十条，且机器人会**重复推送同一题**。因此：
-
-- **`fetch_history.py`**：偶尔手动跑，滚动抓全量历史（边滚边按消息 id 去重累积）
-- **`step2_auto_reply.py`**：日常运行**只读当前可见消息**，不滚动 → 启动快、不卡死
-
-### 2. 只答最新一题（`reply_strategy.latest_only`）
-
-- 只在机器人推了**新题**、且是最新那道题时才回复
-- 答完进入**待命状态**（日志显示 `[待命] 暂无新题，持续监控中…`），静默等新题
-- 启动时历史里的积压旧题**一律跳过**，不会刷屏
-- 想按时间倒序补答全部旧题，把 `latest_only` 改成 `false`
-
-### 3. 正确识别"该答哪道题"（避免答非所问）
-
-机器人有三种出题形态：
-
-| 形态 | 特征 |
-|---|---|
-| ① `AI 自适应问答` 卡片 | 带题号，最规整 |
-| ② `学习反馈` 卡片尾部夹带 | 带题号（"第 N 题"），前面是上一题的判定 |
-| ③ 「请直接回复选项作答」+「当前题目：…」 | **常常不带题号** |
-
-程序的做法：
-
-1. 用**雪花 ID 高位时间戳**还原消息真实先后顺序（**不依赖 DOM 顺序**）
-2. 从三种形态里抽出**当前要答的那道题**（题干必须带 A/B/C/D 选项，否则会答内容而非字母）
-3. 判重**只允许"整体包含"**——精确相等或互为子串；任一方无题号时改用"题干整体包含"覆盖
-   - ⚠️ **绝不能拿固定前 N 字符比较**：同题号 + 同模板句式的**不同题**会被误判成同题，导致永久待命不作答
-4. 上下文里显式标注「★当前待答题目★」，防止模型串题
-
-### 4. 去噪预处理（`denoise.py`）
-
-处理三类噪音，大幅省 token：
-
-- **UI 噪音**：无障碍提示、客户端下载提示等
-- **催答提醒**：`学习提醒 / 你已经XX小时没有答题`（含误导性的课程名示例）
-- **重复消息**：同一题重复推送 N 次（实测重复率高达 50%）
-
-效果：**125 条 → 约 20 条，压缩率 ~85%**。
-> ⚠️ 历史文件一律 `dedup=False` **全量保留**——去重方向与下游不一致会打断题目链。
-
-### 5. 抗浏览器遮挡
-
-浏览器被遮挡 / 最小化 / 失焦时，Chromium 会降级页面：定时器节流、渲染冻结、DOM 停更。
-程序做了四层加固：
-
-1. **抗节流启动参数**：关闭后台定时器节流、渲染降级、窗口遮挡检测
-2. **伪装页面可见性**：让页面始终认为自己在后台无（`visibilityState=visible`）
-3. **不依赖键盘焦点发送**：用 CDP `Input.insertText` + `Input.dispatchKeyEvent` 直接走浏览器原生输入层
-4. **失联自动恢复**：检测到页面失联时自动重载 / 新建页面并重进会话
-
-> 实测：浏览器被遮挡时 `setInterval(100ms)` 3 秒内仍触发 **30/30 次**（默认会降到 0~1 次）。
-
-### 6. 严格只发一次（防重复发送）
-
-飞书输入框是 **Lark 富文本编辑器**，发送后输入框可能残留节点。历史上踩过两个坑：
-
-- ❌ 用"输入框是否为空"判成功 → 误判 → 重复发送
-- ❌ 用"我方消息条数 +1"判成功 → 虚拟滚动下**条数可能不变**，真发出却判失败 → 重发
-- ❌ 键盘模拟兜底时清不干净 → 残留 + 新字母 = `BC`，而平台**只读第一个字母**，答对也判错
-
-现在的做法：
-
-1. **先"内容对齐"再发**：清空 → `insertText` → **校验输入框内容 == 要发的内容**
-   （不一致就重清，最多 3 次；仍不一致就**放弃发送**，绝不发错）
-2. **判是否发出看消息 id 变化**（不是条数）
-3. 三条发送路径（CDP 原生输入 / 点击发送按钮 / 键盘模拟）每条执行前**先复查是否已发出**，一旦确认立即停止
-
-### 7. 发送失败熔断
-
-某题连续发送失败达到阈值后，会**复用首次生成的答案**再试，避免重试时输出漂移
-（同一题两次生成不同答案，日志对不上、也无从判断哪次对）。
-
-### 8. 作答口径
-
-| 题型 | 输出 |
-|---|---|
-| 选择题 | 只回一个字母（`A`/`B`/`C`/`D`） |
-| 判断题 | 只回英文 **小写** `true` / `false`（中文会被判错） |
-| 简答题 | 一两句准确作答 |
-| 代码题 | 极简代码 + 一句话说明；**禁止 ` ``` ` 围栏**（会被判成"资料"不评分）、不写注释、不做异常处理 |
-
----
-
-## 六、如何判断程序是否正常
-
-**界面版**：三个页签实时显示。
-
-- 状态卡指标：**累计已答 / 本轮已答 / 本轮正确率 / 轮询 / 运行时长**
-  - 「本轮正确率」= 本次启动监控后，机器人判定为**答对**的题数 ÷ **已判定**题数
-  - 机器人是**判完卷才回推**「学习反馈」的，所以「已判定」会滞后于「已答」；
-    收到第一条反馈前显示 `—`（不用 `0%` 冒充全错）
-  - 同一条反馈被机器人重复推送时**只计一次**；启动瞬间界面上已有的历史反馈不算
-- 「运行日志」完整运行记录（可「跟随最新 / 复制 / 清屏」）
-- 「答题流水」每答一题一行，一眼看清答了什么、发没发出去
-- 「配置与检查」当前配置明细 + 运行前自检（配置文件 / 模型密钥 / 浏览器登录态 / 历史上下文 / 逻辑版本）
-
-**命令行版**：日志周期性打印
-
-```
-[待命] 暂无新题，持续监控中… (已轮询 12 轮 / DOM 9 条 / 池 110 条 / 最新: ...)
+[待命] 暂无新题，持续监控中… (已轮询 12 轮 / DOM 9 条 / 池 110 条)
 [统计] 本次运行: 已答 12 题 | 已判定 9 题（对 7 / 错 2）| 正确率 77%
 ```
 
-看到这条说明一切正常，只是答完了在等新题（`latest_only: true` 的预期行为，**不是故障**）。
+## Quick start
 
-真故障才有：`循环出错` / `页面失联` / `恢复失败` / 进程消失。
+### Option A — portable build (recommended for end users)
 
-日志文件：
+1. Download `FRT-v1.4.0.zip` from [Releases](https://github.com/biziyvan/FRT-feishu-reply-tool-/releases/latest).
+2. Unzip anywhere and run `飞书自动回复助手.exe`.
+3. Fill in three fields: Feishu web URL, target chat name, LLM API key.
+4. Click **启动监控** (Start monitoring), then scan the QR code once.
 
-| 文件 | 内容 |
+No Python installation required — the runtime and dependencies are bundled.
+
+### Option B — run from source
+
+```bash
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+copy config.example.yaml config.yaml    # then fill in your URL and API key
+.venv\Scripts\python.exe launcher.py
+```
+
+Headless CLI mode:
+
+```bash
+.venv\Scripts\python.exe step2_auto_reply.py                  # run indefinitely
+.venv\Scripts\python.exe step2_auto_reply.py --max-replies 10  # stop after 10 answers
+.venv\Scripts\python.exe step2_auto_reply.py --dry-run -n 5    # dry run, do not send
+```
+
+## Configuration
+
+`config.example.yaml` is the template. The most relevant keys:
+
+| Key | Meaning |
 |---|---|
-| `live.log` | 实时日志，与界面显示一致（**绝不轮转**，界面靠增量读） |
-| `auto_reply.log` | 历史日志，自动轮转（5MB × 5 份） |
-| `launcher_error.log` | 界面层未捕获异常（正常时不存在；窗口程序没控制台，异常会直接消失） |
+| `feishu.base_url` | Feishu web URL (copy from the browser address bar) |
+| `feishu.target_chat_name` | Name of the chatbot conversation |
+| `browser.channel` | `msedge` (default) or `chrome` |
+| `browser.headless` | **Must stay `false`** — Feishu's bot detection is strict |
+| `browser.keep_front` | Periodically raise the window. Default `false` — deliberately does **not** steal focus |
+| `polling.interval` / `jitter` | Poll interval (seconds) and random jitter |
+| `context.max_chars` | Context character budget (token cost control) |
+| `reply_strategy.latest_only` | Answer only the newest question; skip backlogged history |
+| `llm.base_url` / `llm.model` | Any OpenAI-compatible endpoint |
+| `llm.thinking` | `enabled` / `disabled`, or empty for auto-detection |
+| `llm.system_prompt` | System prompt — the main lever on answer quality |
 
----
+Switching providers only requires `base_url` and `model` to change.
 
-## 七、注意事项
+### Using OpenAI
 
-1. **必须有头模式**：无头会被飞书识别，导致掉登录或验证
-2. **最好别关浏览器窗口**：被遮挡已能正常工作，但**直接关闭窗口**会失去登录页面（程序会尝试自动恢复）
-3. **DOM 可能变化**：飞书前端升级后选择器若失效，用 `diag_dom.py` / `diag_page.py` 重新探测
-4. **合规**：仅用于日常答疑场景，请勿用于考试作弊
-5. **更新上下文**：换课程后跑一次 `fetch_history.py`，或删掉 `history.json` 重启
-6. **清理残留进程**：异常中断后如遇浏览器被锁，`taskkill /F /IM msedge.exe` 再重启
-7. **人机边界**：担心"答太快像机器"，可在 `reply.send_delay_min/max` 加大延迟
-8. **`config.yaml` 含密钥**，不要上传或分享；推送仓库前先确认 `.gitignore` 生效
+The LLM layer is vendor-neutral, and OpenAI is a first-class provider: the hostname
+`api.openai.com` is recognised automatically, so no code change is involved.
 
----
-
-## 八、开发与打包
-
-### 打包
-
-```bash
-.venv\Scripts\python.exe package_release.py --build            # 绿色版 + 逻辑更新包 + 源码包
-.venv\Scripts\python.exe package_release.py --set 1.3.0 --build # 同时升版本号
-.venv\Scripts\python.exe package_release.py --with-config path\to\config.yaml  # 额外产「预置配置版」
-.venv\Scripts\python.exe package_release.py --source-only      # 只产源码包
+```yaml
+llm:
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"        # or any chat model
+  api_key: "sk-..."
+  thinking: ""                # leave empty; auto-detection handles the rest
 ```
 
-> ⚠️ `--with-config` 打出的包内含 API Key，注意分发范围。
+Why model quality matters more than it looks: the grading rubric is unforgiving on two
+question types. True/false answers must be the exact lowercase literal `true` / `false` —
+the Chinese equivalents are marked wrong. Code answers must be a bare snippet with **no
+Markdown fences**, because fenced code is classified as "material" and silently not graded.
+Smaller models violate both rules far more often, which is the main practical argument for
+running this against a stronger model.
 
-**引擎 / 逻辑分离**是打包设计的核心：
+## Engineering notes: three bugs that shaped the design
 
-- **引擎**：`launcher.py` / `runtime.py` —— 编进 exe（PYZ）
-- **逻辑**：其余脚本 —— 作为数据文件打进 `_internal/`，运行期 `exec`
+These are documented because they explain most of the code's unusual decisions.
 
-因此：**改逻辑脚本 → 逻辑更新包（几十 KB）即可；动到引擎或打包配置 → 必须重发完整绿色版**。
+### 1. Answers were sent twice
 
-> ⚠️ 打包前请把旧 `dist/` **挪走**（同名目录无法覆盖），`package_release.py` 会自动挪到项目同级 `_feishu_build_trash/`，**只挪不删**。
+The first implementation treated "input box is empty" as proof of a successful send and
+counted "my messages + 1" as confirmation. Under virtual scrolling the message count can
+stay constant even when a send succeeds, so a successful send was classified as a failure
+and retried. A keyboard-simulation fallback made it worse: Lark's editor did not clear
+completely, so a stale `B` plus a new `B` became `BC` — and **the platform only reads the
+first letter**, so a correct answer was graded wrong.
 
-### 测试
+**Fix:** verify the input content against the intended string *before* pressing Enter
+(up to 3 re-clear attempts, then abort), and confirm delivery by **message ID change**.
 
-无头回归（快，可反复跑）：
+### 2. The bot went permanently idle
 
-```bash
-.venv\Scripts\python.exe test_send_guard.py       # 发送链路防错（21 项）
-.venv\Scripts\python.exe test_pending_question.py # 选题/判重（39 项）
-.venv\Scripts\python.exe test_course_prompt.py    # 课程名自动回复（16 项）
-.venv\Scripts\python.exe test_provider.py         # 大模型接口自适应（62 项）
-.venv\Scripts\python.exe test_logic_update.py     # 逻辑更新包机制（39 项）
-.venv\Scripts\python.exe test_robustness.py       # 稳健性（原子写/熔断/退出码/日志兜底）
-.venv\Scripts\python.exe test_data_dir.py         # 数据目录优先级与回退（33 项）
-```
+Question de-duplication originally compared the first 16 characters of a fingerprint.
+Different questions that shared a question number and a template opening line collapsed
+into the same key, so every new question looked like "already answered" — the tool sat
+idle indefinitely (observed: 7 minutes of silence).
 
-图形界面自检（需带 tkinter 的解释器）：
+**Fix:** only exact equality or mutual containment counts as a duplicate; when either side
+has no question number, fall back to "the question stem is wholly contained" with a
+minimum character overlap.
 
-```bash
-set PYTHONPATH=
-.buildenv313\Scripts\python.exe test_cfg_layout.py   # 配置页布局与配色（19 项）
-```
+### 3. The distributed build crashed on launch
 
-> ⚠️ GUI 测试与无头套件**分开跑**——建过 Tk 窗口的进程收尾可能挂住，会拖住整条流水线。
-> ⚠️ 若某些模块在打包后缺失，用锁定 `--run-sub` 与 `package_release.py` 的完整性卡口定位（见 `CHANGELOG.md` v1.1.0）。
+PyInstaller analyses only the entry module. Because the logic scripts are loaded at runtime
+via `exec`, their imports never enter the dependency graph — so `logging.handlers` was
+missing from the shipped executable and the app died with `ModuleNotFoundError` on first
+run.
 
-### 诊断工具
+**Fix:** a three-layer guard — (a) `build.spec` walks the AST of every runtime script to
+collect `hiddenimports`; (b) the packaging pipeline runs *the produced executable* and asks
+it to import each module before declaring success; (c) the script itself falls back to a
+built-in rotating handler so even older builds can be repaired by a logic update.
 
-| 脚本 | 用途 |
-|---|---|
-| `diag_messages.py` | 只读导出当前 DOM 全部消息原文（排查"答非所问"） |
-| `diag_dom.py` | DOM 顺序 vs 雪花 ID 排序对比 |
-| `diag_page.py` | 页面实况（URL / 可见性 / 消息 id 与方向） |
-| `test_send.py` | 发送链路实测（含清空可靠性自检） |
-| `test_background.py` / `test_occlusion.py` / `test_minimize.py` | 遮挡 / 失联恢复 / 最小化能力验证 |
-| `test_choice.py` / `test_code_style.py` / `test_multiline.py` / `test_models_ab.py` | 提示词调优实验（只调大模型，不碰浏览器） |
+## Reliability & testing
 
----
+All checks are headless except the UI suite, and every one of them is a regression test for
+a specific past failure:
 
-## 九、版本号与更新
+| Suite | Assertions | Guards against |
+|---|---:|---|
+| `test_send_guard.py` | 21 | Duplicate sends, corrupted input, wrong success criteria |
+| `test_pending_question.py` | 39 | Question selection and de-duplication |
+| `test_course_prompt.py` | 16 | Course-name auto-reply false triggers |
+| `test_provider.py` | 62 | Vendor parameter mismatch (thinking silently left on) |
+| `test_logic_update.py` | 39 | Update-package whitelist, path traversal, manifest cleanup |
+| `test_robustness.py` | 78 | Atomic writes, circuit breaker, exit codes, log fallback |
+| `test_data_dir.py` | 33 | Data-directory precedence and safe fallback |
+| `test_cfg_layout.py` | 26 | UI clipping and theme regressions |
+| **Total** | **314** | |
 
-### 命名规则
+There is also a cross-module contract test: the console's log-parsing regex is used to parse
+the engine's *actual* output, so if either side drifts the suite fails immediately.
 
-采用**语义化版本**，格式为 `主版本 . 次版本 . 补丁号`（如 `1.2.0`）：
+## Tech stack
 
-| 位 | 何时 +1 | 举例 |
+| Layer | Choice | Rationale |
 |---|---|---|
-| **主版本** | 有不兼容改动（现有配置或数据需人工处理） | 1.2.0 → 2.0.0 |
-| **次版本** | 向后兼容地**新增功能**，补丁位归零 | 1.1.1 → 1.2.0 |
-| **补丁号** | 只**修问题**，不加功能、不改用法 | 1.2.0 → 1.2.1 |
+| Browser automation | Playwright + CDP, Edge (headed) | Native input injection, no OS-level keyboard focus required |
+| LLM | Any OpenAI-compatible API | Vendor-neutral; the default runs a small Qwen model |
+| UI | Tkinter, hand-drawn canvases | Zero extra dependencies, ~1 MB of code instead of a bundled web view |
+| Packaging | PyInstaller (one-folder) | 0.75 s cold start; a single-file build took ~110 s and was dropped |
+| Update channel | Frozen shell + hot-swappable scripts | 44 KB patches instead of 54 MB downloads |
 
-补充约定：
+## Data & privacy
 
-- 当前处于 **1.x 阶段**，配置格式保持向后兼容，不轻易升主版本
-- **已发布的版本号不修改**，发错了就发新版本
-- 逐版改动明细见 [CHANGELOG.md](CHANGELOG.md)
+- No telemetry, no analytics, no network calls other than the chat page and the LLM endpoint
+  you configure.
+- `config.yaml` (which holds your API key) is git-ignored and never bundled into releases.
+- Browser session data stays in the local data directory.
+- This tool is intended for everyday Q&A assistance. It is explicitly **not** intended for
+  exam cheating or any violation of academic integrity.
 
-### 两种升级方式
+## License
 
-| 改了什么 | 怎么升 |
-|---|---|
-| 仅逻辑脚本（`step2_auto_reply.py` / `denoise.py` / `fetch_history.py` / `step1_check_login.py` / `settings.py`） | 下载**逻辑更新包**（几十 KB），在界面点「📦 更新包」导入 |
-| 涉及**引擎**（`launcher.py` / `runtime.py`）或打包配置 | 必须换**完整绿色版**，逻辑包无法覆盖 |
-
-> 判断依据：看 CHANGELOG 各版本末尾的「升级提示」。
-
-### 数据与配置的位置
-
-程序数据（配置 / 登录态 / 日志）存放在用户数据目录，**与解压位置无关**：
-
-```
-C:\Users\<用户名>\AppData\Local\飞书自动回复助手\
-```
-
-- 默认走用户目录，升级解压到任何文件夹都不会丢配置
-- 想固定到某个位置（如 `C:\飞书自动回复助手`），用配置页的「更改数据目录」
-- 换电脑或给别人用：用「导出配置」拿到 `config.yaml`，放到新机器**解压目录（exe 旁）**即自动接管，**不会覆盖对方已填好的配置**
-
----
-
-## 十、许可与声明
-
-- 本工具仅供个人学习与日常答疑辅助使用
-- 请勿用于考试作弊或任何违反学术诚信的场景
-- 使用自动化工具的相关风险由使用者自行承担
-
-见 [LICENSE](LICENSE)。
+[MIT](LICENSE).

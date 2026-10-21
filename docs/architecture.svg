@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="660" viewBox="0 0 980 660" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif">
+<rect width="980" height="660" fill="#F7F8FB"/>
+<text x="40" y="46" font-size="19" font-weight="600" fill="#1A1B23">System Architecture</text>
+<text x="40" y="68" font-size="12" fill="#6B7280">Feishu AI Tutor Auto-Responder · v1.4.0</text>
+<rect x="40" y="88" width="900" height="100" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="60" y="116" font-size="13.5" font-weight="600" fill="#4F46E5">Desktop Console</text>
+<text x="60" y="134" font-size="11" fill="#9CA3AF">launcher.py · Tkinter · zero extra dependencies</text>
+<rect x="60" y="140" width="200" height="30" rx="8" fill="#F4F3FF" stroke="#DDD9FC"/>
+<text x="160.0" y="159.5" font-size="12" font-weight="500" fill="#4F46E5" text-anchor="middle">Status card &amp; metrics</text>
+<rect x="278" y="140" width="200" height="30" rx="8" fill="#F4F3FF" stroke="#DDD9FC"/>
+<text x="378.0" y="159.5" font-size="12" font-weight="500" fill="#4F46E5" text-anchor="middle">Live log</text>
+<rect x="496" y="140" width="200" height="30" rx="8" fill="#F4F3FF" stroke="#DDD9FC"/>
+<text x="596.0" y="159.5" font-size="12" font-weight="500" fill="#4F46E5" text-anchor="middle">Answer stream</text>
+<rect x="714" y="140" width="200" height="30" rx="8" fill="#F4F3FF" stroke="#DDD9FC"/>
+<text x="814.0" y="159.5" font-size="12" font-weight="500" fill="#4F46E5" text-anchor="middle">Pre-flight checks</text>
+<line x1="490" y1="192" x2="490" y2="222" stroke="#B9BDC7" stroke-width="1.6"/>
+<path d="M485 217 L490 222 L485 227" fill="none" stroke="#B9BDC7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="498.0" y="211.0" font-size="10.5" fill="#9CA3AF">subprocess + structured log stream</text>
+<rect x="40" y="232" width="560" height="208" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="60" y="260" font-size="13.5" font-weight="600" fill="#4F46E5">Reply Engine</text>
+<text x="60" y="278" font-size="11" fill="#9CA3AF">step2_auto_reply.py · runs as a child process</text>
+<rect x="60" y="290" width="164" height="62" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="142.0" y="318.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">Poll loop</text>
+<text x="142.0" y="335.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">5 s + jitter</text>
+<rect x="236" y="290" width="164" height="62" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="318.0" y="318.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">DOM snapshot</text>
+<text x="318.0" y="335.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">visible viewport only</text>
+<rect x="412" y="290" width="164" height="62" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="494.0" y="318.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">Question extractor</text>
+<text x="494.0" y="335.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">3 card layouts</text>
+<rect x="60" y="352" width="164" height="62" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="142.0" y="380.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">LLM client</text>
+<text x="142.0" y="397.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">OpenAI-compatible</text>
+<rect x="236" y="352" width="164" height="62" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="318.0" y="380.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">Send &amp; verify</text>
+<text x="318.0" y="397.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">content + message ID</text>
+<rect x="412" y="352" width="164" height="62" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="494.0" y="380.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">Run stats</text>
+<text x="494.0" y="397.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">live accuracy</text>
+<rect x="620" y="232" width="320" height="208" rx="12" fill="#FAFAFB" stroke="#E5E7EB"/>
+<text x="640" y="260" font-size="13.5" font-weight="600" fill="#4F46E5">Hot-swappable logic</text>
+<text x="640" y="278" font-size="11" fill="#9CA3AF">patched without reinstalling the app</text>
+<rect x="640" y="288" width="280" height="40" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="780.0" y="305.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">denoise.py</text>
+<text x="780.0" y="322.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">noise filter · dedup · fingerprint</text>
+<rect x="640" y="338" width="280" height="40" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="780.0" y="355.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">settings.py</text>
+<text x="780.0" y="372.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">provider auto-adaptation</text>
+<rect x="640" y="388" width="280" height="40" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="780.0" y="405.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">fetch_history.py</text>
+<text x="780.0" y="422.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">scroll &amp; accumulate</text>
+<line x1="600" y1="336" x2="618" y2="336" stroke="#B9BDC7" stroke-width="1.6"/>
+<path d="M613 331 L618 336 L613 341" fill="none" stroke="#B9BDC7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="320" y1="444" x2="320" y2="474" stroke="#B9BDC7" stroke-width="1.6"/>
+<path d="M315 469 L320 474 L315 479" fill="none" stroke="#B9BDC7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="780" y1="444" x2="780" y2="474" stroke="#B9BDC7" stroke-width="1.6"/>
+<path d="M775 469 L780 474 L775 479" fill="none" stroke="#B9BDC7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="40" y="478" width="900" height="108" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="60" y="506" font-size="13.5" font-weight="600" fill="#4F46E5">External services</text>
+<text x="60" y="524" font-size="11" fill="#9CA3AF">all network traffic goes here — nowhere else</text>
+<rect x="60" y="528" width="420" height="42" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="270.0" y="546.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">Feishu / Lark Web</text>
+<text x="270.0" y="563.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">virtual-scrolling chat · rich-text input</text>
+<rect x="500" y="528" width="420" height="42" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="710.0" y="546.0" font-size="12" font-weight="500" fill="#1A1B23" text-anchor="middle">LLM API</text>
+<text x="710.0" y="563.0" font-size="10.5" fill="#9CA3AF" text-anchor="middle">any OpenAI-compatible endpoint</text>
+<text x="40" y="620" font-size="11" fill="#6B7280">The console never drives the browser directly: it launches the engine as a subprocess and reads its log stream.</text>
+<text x="40" y="638" font-size="11" fill="#9CA3AF">Engine and logic scripts are separated so reply behaviour can be patched with a ~44 KB update instead of a 54 MB download.</text>
+</svg>
